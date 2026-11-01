@@ -1,0 +1,21 @@
+## Build results
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+publish/
+
+## Visual Studio cache and settings
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## CodeGraph and tooling artifacts
+.codegraph/
+
+## OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
