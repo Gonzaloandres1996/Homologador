@@ -5,7 +5,7 @@
    OBJETIVO: Esquema 100% relacional auditado y simplificado (13 tablas):
              1. Cero GUIDs (UNIQUEIDENTIFIER): Uso de INT IDENTITY(1,1) + Codigo ('0001', '0002', '0003').
              2. Seguridad simplificada: Users absorbe Roles, UserRoles y UserProfiles mediante CHECK constraints.
-             3. Pipelines y Reglas de Mapeo COMPLETOS (migra los 9 MappingPipelines y las 316 MappingRules
+             3. Pipelines y Reglas de Mapeo COMPLETOS (incluye los 3 MappingPipelines y las 122 MappingRules validadas
                 reales desde DataHomologator para que el Excel/CSV se siga generando exactamente igual).
              4. Persistencia simplificada en 3 tablas independientes (solo registra qué Lote se generó):
                 - RegistrosRecepcion  (PK: Lote)
@@ -273,170 +273,272 @@ CREATE TABLE dbo.ExecutionLogs (
 );
 GO
 
+
 /* =========================================================================================
-   MIGRACIÓN ÍNTEGRA DE CONFIGURACIONES, PIPELINES Y LAS 316 REGLAS DESDE [DataHomologator]
-   (Convierte todos los GUIDs antiguos a IDs secuenciales 0001, 0002, 0003...)
+   BLOQUE 4: CARGA DE CONFIGURACIÓN Y CATÁLOGOS OFICIALES (122 REGLAS / 3 REPORTES)
+   Base de datos 100% autocontenida: no requiere de bases de datos intermedias ni externas.
    ========================================================================================= */
 
--- 1. Migrar Usuarios (con su Rol y Perfil reales, sin MustChangePassword ni UpdatedAt)
-INSERT INTO dbo.Users (Email, DisplayName, PasswordHash, Rol, Perfil, IsActive, CreatedAt)
-SELECT
-    u.Email,
-    u.DisplayName,
-    u.PasswordHash,
-    CASE WHEN EXISTS (
-        SELECT 1 FROM [DataHomologator].dbo.UserRoles ur
-        JOIN [DataHomologator].dbo.Roles r ON r.Id = ur.RoleId
-        WHERE ur.UserId = u.Id AND r.Name = 'Admin'
-    ) THEN 'Admin' ELSE 'Operator' END AS Rol,
-    up.Name AS Perfil,
-    u.IsActive,
-    u.CreatedAt
-FROM [DataHomologator].dbo.Users u
-LEFT JOIN [DataHomologator].dbo.UserProfiles up ON up.Id = u.ProfileId
-ORDER BY u.CreatedAt;
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+-- -------------------------------------------------------------
+-- Datos: dbo.Users (4 filas)
+-- -------------------------------------------------------------
+SET IDENTITY_INSERT dbo.[Users] ON;
+INSERT INTO dbo.[Users] ([Id], [Email], [DisplayName], [PasswordHash], [Rol], [Perfil], [IsActive], [CreatedAt]) VALUES
+    (1, N'gonzalo.aravena@ddc.cl', N'System Administrator', N'$2a$11$LG7UuljlXLcRBnkUKpfkz.oowfNjinsCUuIR8vgiY4VJ5bL/ztdRq', N'Admin', NULL, 1, '2026-09-29 11:27:33'),
+    (2, N'michelle.cornejo@ddc.cl', N'Operador de Recepción', N'$2a$11$GVj.IFqMDgLppfhoyZdUc.2o97Sdtxramdr0Bjy3duXeikv8ZBXSa', N'Operator', N'Recepci' + NCHAR(243) + N'n', 1, '2026-09-29 11:27:34'),
+    (3, N'marcela.acuna@ddc.cl', N'Marcela Acuña', N'$2a$11$CUnpzz67u2Tfewmrp9Te8e839nnQk2vVZVOGo3vLK3Pc8j5SQqjVy', N'Operator', N'Calidad', 1, '2026-10-26 19:45:36'),
+    (4, N'eliana.rivas@ddc.cl', N'Eliana Rivas', N'$2a$11$7P/BxUvZEkjuiCHvXPSd7OvI2iNXQuQ24Au6gzrYxTWBz.TPUon2a', N'Operator', N'Producci' + NCHAR(243) + N'n', 1, '2026-10-26 19:45:56');
+SET IDENTITY_INSERT dbo.[Users] OFF;
+GO
 
--- 2. Migrar DataSources reales
-INSERT INTO dbo.DataSources (Name, Server, [Database], AuthType, UsernameEncrypted, PasswordEncrypted, ConnectionTimeout, IsActive, CreatedAt, UpdatedAt)
-SELECT Name, Server, [Database], AuthType, UsernameEncrypted, PasswordEncrypted, ConnectionTimeout, IsActive, CreatedAt, UpdatedAt
-FROM [DataHomologator].dbo.DataSources
-ORDER BY CreatedAt;
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+-- -------------------------------------------------------------
+-- Datos: dbo.DataSources (1 filas)
+-- -------------------------------------------------------------
+SET IDENTITY_INSERT dbo.[DataSources] ON;
+INSERT INTO dbo.[DataSources] ([Id], [Name], [Server], [Database], [AuthType], [UsernameEncrypted], [PasswordEncrypted], [ConnectionTimeout], [IsActive], [CreatedAt], [UpdatedAt]) VALUES
+    (1, N'DAIA Producción', N'192.168.3.17', N'daia', 1, N'gnEeSPaZDChK0ta7C91rkgUJdfcvSTD7b8zMWpOJN/Y=', N'qMMe4eqwHZgHaGsYw1/ZvA8Jp7dNCZk97ciHGQBcq1E=', 15, 1, '2026-09-23 14:56:23', '2026-09-29 14:19:30');
+SET IDENTITY_INSERT dbo.[DataSources] OFF;
+GO
 
--- 3. Migrar QueryDefinitions reales
-INSERT INTO dbo.QueryDefinitions (Name, DataSourceId, CommandType, CommandText, Description, IsActive, CreatedAt, UpdatedAt)
-SELECT
-    qd.Name,
-    dsNew.Id,
-    qd.CommandType,
-    qd.CommandText,
-    qd.Description,
-    qd.IsActive,
-    qd.CreatedAt,
-    qd.UpdatedAt
-FROM [DataHomologator].dbo.QueryDefinitions qd
-JOIN [DataHomologator].dbo.DataSources dsOld ON dsOld.Id = qd.DataSourceId
-JOIN dbo.DataSources dsNew ON dsNew.Name = dsOld.Name
-ORDER BY qd.Name;
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+-- -------------------------------------------------------------
+-- Datos: dbo.QueryDefinitions (3 filas)
+-- -------------------------------------------------------------
+SET IDENTITY_INSERT dbo.[QueryDefinitions] ON;
+INSERT INTO dbo.[QueryDefinitions] ([Id], [Name], [DataSourceId], [CommandType], [CommandText], [Description], [IsActive], [CreatedAt], [UpdatedAt]) VALUES
+    (1, N'Calidad ANDINEXIA sql', 1, 1, N'[dbo].[SPC_CALIDAD_PIVOT]', N'Consulta pivot de calidad Andinexia', 0, '2026-10-13 16:43:20', '2026-10-26 14:41:34'),
+    (2, N'Producción ANDINEXIA sql', 1, 1, N'EXEC [dbo].[SP_AUTH_VIEW] @view_name = N''viewProduccion''', N'Consulta pivot de producción Andinexia', 0, '2026-10-14 15:14:40', '2026-10-14 15:17:41'),
+    (3, N'Recepción Materia Prima (DAIA)', 1, 1, N'EXEC [dbo].[SP_AUTH_VIEW] @view_name = N''viewRecepcion''', N'Extracción de recepciones desde vista autorizada viewRecepcion', 1, '2026-09-23 14:56:24', NULL);
+SET IDENTITY_INSERT dbo.[QueryDefinitions] OFF;
+GO
 
--- 4. Migrar QueryParameters reales
-INSERT INTO dbo.QueryParameters (QueryDefinitionId, SortOrder, Name, SqlType, DefaultValue, Description)
-SELECT
-    qdNew.Id,
-    qp.SortOrder,
-    qp.Name,
-    qp.SqlType,
-    qp.DefaultValue,
-    qp.Description
-FROM [DataHomologator].dbo.QueryParameters qp
-JOIN [DataHomologator].dbo.QueryDefinitions qdOld ON qdOld.Id = qp.QueryDefinitionId
-JOIN dbo.QueryDefinitions qdNew ON qdNew.Name = qdOld.Name
-ORDER BY qdNew.Id, qp.SortOrder;
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+-- -------------------------------------------------------------
+-- Datos: dbo.QueryParameters (6 filas)
+-- -------------------------------------------------------------
+SET IDENTITY_INSERT dbo.[QueryParameters] ON;
+INSERT INTO dbo.[QueryParameters] ([Id], [QueryDefinitionId], [SortOrder], [Name], [SqlType], [DefaultValue], [Description]) VALUES
+    (1, 1, 0, N'@CONTROL_TYPE', N'nvarchar', N'RCP', N'Tipo de control'),
+    (2, 1, 1, N'@ESPECIE', N'nvarchar', N'CZ', N'Especie'),
+    (3, 1, 2, N'@TEMPORADA', N'nvarchar', N'6', N'Temporada'),
+    (4, 1, 3, N'@ESPECIE', N'nvarchar', N'Cz', N''),
+    (5, 2, 0, N'@view_name', N'nvarchar', N'viewProduccion', N''),
+    (6, 3, 0, N'@view_name', N'nvarchar', N'viewRecepcion', N'Nombre de la vista origen');
+SET IDENTITY_INSERT dbo.[QueryParameters] OFF;
+GO
 
--- 5. Migrar LookupTables reales
-INSERT INTO dbo.LookupTables (Name, Description, CreatedAt, UpdatedAt)
-SELECT Name, Description, CreatedAt, UpdatedAt
-FROM [DataHomologator].dbo.LookupTables
-ORDER BY Name;
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+-- -------------------------------------------------------------
+-- Datos: dbo.LookupTables (4 filas)
+-- -------------------------------------------------------------
+SET IDENTITY_INSERT dbo.[LookupTables] ON;
+INSERT INTO dbo.[LookupTables] ([Id], [Name], [Description], [CreatedAt], [UpdatedAt]) VALUES
+    (1, N'Especies', N'', '2026-09-23 17:57:20', '2026-10-26 17:49:46'),
+    (2, N'Esponjas', N'', '2026-10-13 19:42:03', '2026-10-13 19:42:26'),
+    (3, N'Polvo Tierra', N'', '2026-10-13 19:45:14', '2026-10-13 19:45:27'),
+    (4, N'Tratamiento', N'', '2026-10-13 19:32:54', '2026-10-13 19:33:12');
+SET IDENTITY_INSERT dbo.[LookupTables] OFF;
+GO
 
--- 6. Migrar LookupEntries reales
-INSERT INTO dbo.LookupEntries (LookupTableId, KeyValue, MappedValue, ExtraField1)
-SELECT
-    ltNew.Id,
-    le.KeyValue,
-    le.MappedValue,
-    le.ExtraField1
-FROM [DataHomologator].dbo.LookupEntries le
-JOIN [DataHomologator].dbo.LookupTables ltOld ON ltOld.Id = le.LookupTableId
-JOIN dbo.LookupTables ltNew ON ltNew.Name = ltOld.Name
-ORDER BY ltNew.Id, le.KeyValue;
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+-- -------------------------------------------------------------
+-- Datos: dbo.LookupEntries (7 filas)
+-- -------------------------------------------------------------
+SET IDENTITY_INSERT dbo.[LookupEntries] ON;
+INSERT INTO dbo.[LookupEntries] ([Id], [LookupTableId], [KeyValue], [MappedValue], [ExtraField1]) VALUES
+    (1, 1, N'Cereza', N'CEREZAS', NULL),
+    (2, 1, N'Ciruela', N'CIRUELAS', NULL),
+    (3, 2, N'no', N'No Cumple', NULL),
+    (4, 2, N'si', N'Cumple', NULL),
+    (5, 3, N'no', N'Cumple', NULL),
+    (6, 3, N'si', N'No Cumple', NULL),
+    (7, 4, N'Si', N'Hidrocooler', NULL);
+SET IDENTITY_INSERT dbo.[LookupEntries] OFF;
+GO
 
--- 7. Migrar SOLO los 3 MappingPipelines oficiales requeridos para Andinexia
-INSERT INTO dbo.MappingPipelines (Name, Description, IsActive, CreatedAt, UpdatedAt)
-SELECT Name, Description, IsActive, CreatedAt, UpdatedAt
-FROM [DataHomologator].dbo.MappingPipelines
-WHERE Name IN ('Calidad Andinexia', 'Recepciones 26-10') OR Name LIKE 'Pipeline SAP Producc%'
-ORDER BY Name;
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+-- -------------------------------------------------------------
+-- Datos: dbo.MappingPipelines (3 filas)
+-- -------------------------------------------------------------
+SET IDENTITY_INSERT dbo.[MappingPipelines] ON;
+INSERT INTO dbo.[MappingPipelines] ([Id], [Name], [Description], [IsActive], [CreatedAt], [UpdatedAt]) VALUES
+    (1, N'Calidad Andinexia', N'Carga de calidad Andinexia', 1, '2026-10-13 16:12:51', '2026-10-26 19:47:36'),
+    (2, N'Pipeline SAP Producción', N'Mapeo hacia formato SAP con columnas reales de DAIA', 1, '2026-10-14 15:19:02', '2026-10-28 18:48:19'),
+    (3, N'Recepciones 26-10', N'Mapeo hacia formato SAP con columnas reales de DAIA', 1, '2026-10-26 12:06:02', '2026-10-26 19:38:29');
+SET IDENTITY_INSERT dbo.[MappingPipelines] OFF;
+GO
 
--- 8. Migrar únicamente las reglas pertenecientes a los 3 pipelines oficiales (122 reglas)
-INSERT INTO dbo.MappingRules (
-    PipelineId, SortOrder, TargetColumn, RuleType, SourceColumn, FixedValue,
-    LookupTableId, LookupKeyColumn, LookupValueColumn, DateFormat, Validation,
-    IsRequired, IsIdentity, SubstringStart, SubstringLength
-)
-SELECT
-    mpNew.Id,
-    mr.SortOrder,
-    mr.TargetColumn,
-    mr.RuleType,
-    mr.SourceColumn,
-    mr.FixedValue,
-    ltNew.Id,
-    mr.LookupKeyColumn,
-    mr.LookupValueColumn,
-    mr.DateFormat,
-    mr.Validation,
-    mr.IsRequired,
-    mr.IsIdentity,
-    mr.SubstringStart,
-    mr.SubstringLength
-FROM [DataHomologator].dbo.MappingRules mr
-JOIN [DataHomologator].dbo.MappingPipelines mpOld ON mpOld.Id = mr.PipelineId
-JOIN dbo.MappingPipelines mpNew ON mpNew.Name = mpOld.Name
-LEFT JOIN [DataHomologator].dbo.LookupTables ltOld ON ltOld.Id = mr.LookupTableId
-LEFT JOIN dbo.LookupTables ltNew ON ltNew.Name = ltOld.Name
-ORDER BY mpNew.Id, mr.SortOrder;
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+-- -------------------------------------------------------------
+-- Datos: dbo.MappingRules (122 filas)
+-- -------------------------------------------------------------
+SET IDENTITY_INSERT dbo.[MappingRules] ON;
+INSERT INTO dbo.[MappingRules] ([Id], [PipelineId], [SortOrder], [TargetColumn], [RuleType], [SourceColumn], [FixedValue], [LookupTableId], [LookupKeyColumn], [LookupValueColumn], [DateFormat], [Validation], [IsRequired], [IsIdentity], [SubstringStart], [SubstringLength]) VALUES
+    (1, 1, 1, N'PARTIDA', N'Formatted', N'Lote', N'A51', NULL, NULL, NULL, NULL, NULL, 0, 1, 5, 4),
+    (2, 1, 2, N'T1', N'Direct', N'Temperatura Pulpa', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (3, 1, 3, N'T2', N'Direct', N'Temperatura Pulpa', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (4, 1, 4, N'T3', N'Direct', N'Temperatura Pulpa', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (5, 1, 5, N'PESOTOTALMUESTRA', N'Direct', N'Peso Muestra', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (6, 1, 6, N'Blando', N'Direct', N'%MUY BLANDO', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (7, 1, 7, N'Sensible', N'Direct', N'%BLANDO', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (8, 1, 8, N'Firme', N'Direct', N'%FIRME', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (9, 1, 9, N'Muy firme', N'Direct', N'%MUY FIRME', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (10, 1, 10, N'Precalibre', N'Direct', N'PRECALIBRE', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (11, 1, 11, N'Calibre L', N'Direct', N'L', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (12, 1, 12, N'Calibre XL', N'Direct', N'XL', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (13, 1, 13, N'Calibre J', N'Direct', N'J', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (14, 1, 14, N'Calibre 2J', N'Direct', N'2J', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (15, 1, 15, N'Calibre 3J', N'Direct', N'3J', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (16, 1, 16, N'Calibre 4J', N'Direct', N'4J', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (17, 1, 17, N'Calibre 5J', N'Direct', N'5J', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (18, 1, 18, N'Calibre 6J', N'Direct', N'6J', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (19, 1, 19, N'Falta de Color - 0', N'Direct', N'FALTA DE COLOR', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (20, 1, 20, N'Rojo Claro - 1', N'Fixed', NULL, N'0', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (21, 1, 21, N'Rojo - 2', N'Fixed', NULL, N'0', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (22, 1, 22, N'Rojo Caoba - 3', N'Direct', N'Rojo', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (23, 1, 23, N'Rojo Caoba - 3.3', N'Fixed', NULL, N'0', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (24, 1, 24, N'Rojo Santina - 3.5', N'Direct', N'Rojo caoba', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (25, 1, 25, N'Rojo Caoba 3,8 - 3.8', N'Fixed', NULL, N'0', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (26, 1, 26, N'Rojo Caoba Oscuro - 4', N'Direct', N'Caoba oscuro', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (27, 1, 27, N'Negro - 5', N'Direct', N'Negro', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (28, 1, 28, N'Dano Pajaro', N'Direct', N'DAÑO DE PAJARO', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (29, 1, 29, N'Dano de Insecto', N'Direct', N'DAÑO DE INSECTO', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (30, 1, 30, N'Fruto Deshidratado', N'Direct', N'FRUTO DESHIDRATADO', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (31, 1, 31, N'Fruto Blando', N'Direct', N'FRUTO BLANDO', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (32, 1, 32, N'Heridas Abiertas', N'Direct', N'HERIDA ABIERTA', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (33, 1, 33, N'Machucon', N'Direct', N'MACHUCON', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (34, 1, 34, N'Mancha Parda', N'Direct', N'MANCHA PARDA', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (35, 1, 35, N'Media Luna', N'Direct', N'MEDIA LUNA CICATRIZADA', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (36, 1, 36, N'Partidura Apical', N'Direct', N'PARTIDURA APICAL', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (37, 1, 37, N'Partidura Basal', N'Aggregate', N'PARTIDURA BASAL, MEDIA LUNA', N'SUM', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (38, 1, 38, N'Partidura Longitudinal', N'Direct', N'PARTIDURA LONGITUDINAL', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (39, 1, 39, N'Partiduras', N'Fixed', NULL, N'0', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (40, 1, 40, N'Pedicelo Deshidratado', N'Direct', N'PEDICELO DESHIDRATADO', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (41, 1, 41, N'Pitting', N'Direct', N'PITTING', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (42, 1, 42, N'Pudricion (Piel Seca)', N'Direct', N'PUDRICIÓN', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (43, 1, 43, N'Pudricion Seca', N'Direct', N'PUDRICION SECA', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (44, 1, 44, N'Residuos Químicos', N'Direct', N'RESIDUOS QUIMICOS', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (45, 1, 45, N'Roce', N'Direct', N'ROCE', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (46, 1, 46, N'Sutura Abierta', N'Direct', N'SUTURA SEVERA (ABIERTA)', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (47, 1, 47, N'Varios Condicion', N'Fixed', N'OTRO CONDICION', N'0', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (48, 1, 48, N'Frutos Deformes', N'Direct', N'FRUTO DEFORME', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (49, 1, 49, N'Frutos Dobles', N'Direct', N'FRUTOS DOBLES', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (50, 1, 50, N'Golpe de Sol', N'Direct', N'GOLPE DE SOL', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (51, 1, 51, N'Heridas Cicatrizadas', N'Direct', N'HERIDA CICATRIZADA', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (52, 1, 52, N'Hijuelos', N'Direct', N'HIJUELO', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (53, 1, 53, N'Mancha Dorada', N'Fixed', NULL, N'0', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (54, 1, 54, N'Mancha Trips', N'Direct', N'DAÑO TRIPS', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (55, 1, 55, N'Russet', N'Direct', N'RUSSET', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (56, 1, 56, N'Sin Pedicelo', N'Direct', N'FRUTO SIN PEDICELO', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (57, 1, 57, N'Sutura Cerrada', N'Direct', N'SUTURA ABIERTA', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (58, 1, 58, N'Varios Calidad', N'Fixed', N'0', N'0', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (59, 1, 59, N'Virosis', N'Direct', N'SINTOMAS DE VIROSIS', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (60, 1, 60, N'Certificacion GGAP', N'Empty', NULL, N'Ingresa DDC (vacio)', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (61, 1, 61, N'Presencia de Escama', N'Empty', NULL, N'Ingresa DDC (vacio)', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (62, 1, 62, N'Presencia de Lobesia Botrana', N'Empty', NULL, N'Ingresa DDC (vacio)', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (63, 1, 63, N'Presencia de Cyidia Molesta', N'Empty', NULL, N'Ingresa DDC (vacio)', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (64, 1, 64, N'Presencia de Chancito Blanco', N'Empty', NULL, N'Ingresa DDC (vacio)', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (65, 1, 65, N'Presencia de Arana', N'Empty', NULL, N'Ingresa DDC (vacio)', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (66, 1, 66, N'Set Point Camion', N'Direct', N'Temperatura de Camión', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (67, 1, 67, N'Solidos Solubles Dark', N'Aggregate', N'brix_caoba, brix_caoba_oscuro', N'AVG', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (68, 1, 68, N'Solidos Solubles Light', N'Aggregate', N'brix_rojo, brix_rojo_caoba', N'AVG', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (69, 1, 69, N'Tipo de Packing', N'Fixed', NULL, N'DDC', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (70, 1, 70, N'Analisis Multiresiduos', N'Empty', NULL, N'Ingresa DDC (vacio)', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (71, 1, 71, N'Tratamiento', N'Homologation', N'Fruta con Hidro', NULL, 4, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (72, 1, 72, N'Sensibilidad a Partiduria', N'Empty', NULL, N'1 vez por productor', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (73, 1, 73, N'FirmPro Promedio', N'Direct', N'FIRMEZA PROMEDIO', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (74, 1, 74, N'Polvo y Tierra', N'Homologation', N'PRESENCIA DE POLVO', NULL, 3, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (75, 1, 75, N'Esponjas cloradas', N'Homologation', N'ESPONJA', NULL, 2, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (76, 1, 76, N'Estriba de camiones', N'Fixed', N'TIPO DE CUBIERTA', N'Pendiente Cumple o No cumple AN', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (77, 1, 77, N'Nota pedicelo', N'Fixed', NULL, N'Pendiente Campo AN', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (78, 1, 78, N'Dano asociado a la cosecha', N'Empty', NULL, N'Ingresa DDC (vacio)', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (79, 1, 79, N'Aptitud de Viaje', N'Empty', NULL, N'Ingresa DDC (vacio)', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (80, 1, 80, N'Tipo de Frio', N'Fixed', NULL, N'FC', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (81, 2, 1, N'CENTRO', N'Fixed', NULL, N'AN05', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (82, 2, 2, N'', N'Empty', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (83, 2, 3, N'ALMACEN 1', N'Fixed', NULL, N'PA03', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (84, 2, 4, N'ALMACEN 2', N'Fixed', NULL, N'PA04', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (85, 2, 5, N'ESPECIE', N'Homologation', N'Especie', NULL, 1, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (86, 2, 6, N'LOTERECEPCION', N'Formatted', N'Nro. Proceso', N'AN051', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, 5),
+    (87, 2, 7, N'LOTEPROCESO', N'Formatted', N'Nro. Proceso', N'AN051', NULL, NULL, NULL, NULL, NULL, 0, 1, NULL, 5),
+    (88, 2, 8, N'CODIGO PALLET', N'Direct', N'Lote', N'Tabla', NULL, NULL, NULL, NULL, NULL, 0, 1, NULL, NULL),
+    (89, 2, 9, N'ALTURA', N'Direct', N'TABLA', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (90, 2, 10, N'FECHA CONTABILIZACION', N'Direct', N'Fecha packing', NULL, NULL, NULL, NULL, N'dd.MM.yyyy', NULL, 0, 0, NULL, NULL),
+    (91, 2, 11, N'FECHA EMBALAJE', N'Direct', N'Fecha packing', NULL, NULL, NULL, NULL, N'dd.MM.yyyy', NULL, 0, 0, NULL, NULL),
+    (92, 2, 12, N'MATERIAL', N'Direct', N'Embalaje_Referido', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (93, 2, 13, N'TIPO MATERIAL(PALLET, BIN, ETC)', N'Fixed', NULL, N'TACO', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (94, 2, 14, N'CANTIDAD', N'Direct', N'Cant.cajas', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (95, 2, 15, N'CALIBRE', N'Direct', N'Calibre', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (96, 2, 16, N'PRODUCTOR', N'Direct', N'Codigo_Interno_Productor', N'Codigo_Interno_Productor', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (97, 2, 17, N'VARIEDAD ROTULADA', N'Direct', N'Codigo Variedad', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (98, 2, 18, N'CALIDAD', N'Direct', N'Categoria', NULL, NULL, NULL, NULL, NULL, N'COM, GRA, DES, PC', 0, 0, NULL, NULL),
+    (99, 2, 19, N'KILOS RECEPCION', N'Empty', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (100, 3, 1, N'Centro', N'Fixed', NULL, N'AN05', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (101, 3, 2, N'AlmacenGranel', N'Fixed', NULL, N'FR06', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (102, 3, 3, N'Material', N'Homologation', N'Especie', NULL, 1, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (103, 3, 4, N'Productor', N'Direct', N'Codigo_Interno_Productor', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (104, 3, 5, N'UAT', N'Computed', N'UAT', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (105, 3, 6, N'FechaContabilizacion', N'Direct', N'Fecha Recepción', NULL, NULL, NULL, NULL, N'dd.MM.yyyy', NULL, 0, 0, NULL, NULL),
+    (106, 3, 7, N'FechaCosecha', N'Direct', N'Fecha_Cosecha', NULL, NULL, NULL, NULL, N'dd.MM.yyyy', NULL, 0, 0, NULL, NULL),
+    (107, 3, 8, N'PredioSDP', N'Computed', N'SDP', N'N/A', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (108, 3, 9, N'Cuartel', N'Computed', N'Cuartel', N'NA', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (109, 3, 10, N'Variedad', N'Direct', N'Codigo Variedad', N'P_ANDINEXIA codddc', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (110, 3, 11, N'GuiadeDespacho', N'Direct', N'Guia de despacho', N'Pendiente', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (111, 3, 12, N'Observacion', N'Direct', N'Observacion', N'Observacion', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (112, 3, 13, N'Patente', N'Direct', N'Patente', N'Pendiente', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (113, 3, 14, N'Conductor', N'Direct', N'Nombre Chofer', N'Pendiente', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (114, 3, 15, N'Kilos', N'Direct', N'Peso lote', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (115, 3, 16, N'Cantidad', N'Direct', N'Cant. bins', N'Pendiente ''cant bins''', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (116, 3, 17, N'Tipo Envase', N'Fixed', NULL, N'EP30', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (117, 3, 18, N'Cntd Envases', N'Direct', N'Cant. bins', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (118, 3, 19, N'MaterialDestare', N'Fixed', NULL, N'EP20', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (119, 3, 20, N'Cntd MAT_2', N'Direct', N'Totes', N'P_ANDINEXIA "Totes"', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (120, 3, 21, N'Acopio', N'Fixed', NULL, N'AN05', NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL),
+    (121, 3, 22, N'Lote', N'Formatted', N'Lote', N'A51', NULL, NULL, NULL, NULL, NULL, 0, 1, 5, 4),
+    (122, 3, 23, N'Cliente', N'Empty', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL);
+SET IDENTITY_INSERT dbo.[MappingRules] OFF;
+GO
 
--- Parametrización de identidad dinámica en Producción:
--- Se define como clave compuesta (LOTEPROCESO + CODIGO PALLET) en las reglas del pipeline
-UPDATE mr
-SET mr.IsIdentity = 1
-FROM dbo.MappingRules mr
-JOIN dbo.MappingPipelines mp ON mp.Id = mr.PipelineId
-WHERE mp.Name LIKE 'Pipeline SAP Producc%'
-  AND mr.TargetColumn IN ('LOTEPROCESO', 'CODIGO PALLET');
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+-- -------------------------------------------------------------
+-- Datos: dbo.Reports (3 filas)
+-- -------------------------------------------------------------
+SET IDENTITY_INSERT dbo.[Reports] ON;
+INSERT INTO dbo.[Reports] ([Id], [Name], [Description], [TargetArea], [QueryDefinitionId], [MappingPipelineId], [OutputFormat], [OutputSheetName], [OutputFilePattern], [IsActive], [CreatedAt], [UpdatedAt]) VALUES
+    (1, N'Calidad ANDINEXIA', N'', N'Calidad', 1, 1, N'Excel', N'Data', N'Calidad_{yyyyMMdd_HHmmss}.xlsx', 1, '2026-10-13 17:02:05', NULL),
+    (2, N'Carga Masiva SAP Recepción MP', N'Planilla homologada lista para SAP a partir de DAIA', N'Recepci' + NCHAR(243) + N'n', 3, 3, N'Excel', N'RECEPCION', N'SAP_RECEPCION_{yyyyMMdd_HHmmss}.xlsx', 1, '2026-09-23 14:56:27', '2026-10-26 19:37:15'),
+    (3, N'Producción ANDINEXIA', N'', N'Producci' + NCHAR(243) + N'n', 2, 2, N'Excel', N'PRODUCCION', N'Proceso_{yyyyMMdd_HHmmss}.xlsx', 1, '2026-10-14 16:55:41', '2026-10-15 13:41:47');
+SET IDENTITY_INSERT dbo.[Reports] OFF;
+GO
 
-UPDATE mr
-SET mr.IsIdentity = 0
-FROM dbo.MappingRules mr
-JOIN dbo.MappingPipelines mp ON mp.Id = mr.PipelineId
-WHERE mp.Name LIKE 'Pipeline SAP Producc%'
-  AND mr.TargetColumn = 'LOTERECEPCION';
-
--- 9. Migrar los 3 Reports principales para Andinexia
-INSERT INTO dbo.Reports (
-    Name, Description, TargetArea, QueryDefinitionId, MappingPipelineId,
-    OutputFormat, OutputSheetName, OutputFilePattern, IsActive, CreatedAt, UpdatedAt
-)
-SELECT
-    r.Name,
-    r.Description,
-    CASE
-        WHEN r.Name LIKE N'%Calidad%'    THEN N'Calidad'
-        WHEN r.Name LIKE N'%Producc%'   THEN N'Producci' + NCHAR(243) + N'n'
-        ELSE N'Recepci' + NCHAR(243) + N'n'
-    END AS TargetArea,
-    qdNew.Id,
-    mpNew.Id,
-    r.OutputFormat,
-    r.OutputSheetName,
-    r.OutputFilePattern,
-    r.IsActive,
-    r.CreatedAt,
-    r.UpdatedAt
-FROM [DataHomologator].dbo.Reports r
-JOIN [DataHomologator].dbo.QueryDefinitions qdOld ON qdOld.Id = r.QueryDefinitionId
-JOIN dbo.QueryDefinitions qdNew ON qdNew.Name = qdOld.Name
-JOIN [DataHomologator].dbo.MappingPipelines mpOld ON mpOld.Id = r.MappingPipelineId
-JOIN dbo.MappingPipelines mpNew ON mpNew.Name = mpOld.Name
-WHERE r.Name NOT LIKE '%Recepciones Andinexia 26/27%'
-ORDER BY r.Name;
-
--- 10. Migrar las asignaciones de UserReports para los 3 reportes
-INSERT INTO dbo.UserReports (UserId, ReportId)
-SELECT uNew.Id, rNew.Id
-FROM [DataHomologator].dbo.UserReports ur
-JOIN [DataHomologator].dbo.Users uOld ON uOld.Id = ur.UserId
-JOIN dbo.Users uNew ON uNew.Email = uOld.Email
-JOIN [DataHomologator].dbo.Reports rOld ON rOld.Id = ur.ReportId
-JOIN dbo.Reports rNew ON rNew.Name = rOld.Name;
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+-- -------------------------------------------------------------
+-- Datos: dbo.UserReports (3 filas)
+-- -------------------------------------------------------------
+INSERT INTO dbo.[UserReports] ([UserId], [ReportId]) VALUES
+    (2, 2),
+    (3, 1),
+    (4, 3);
 GO

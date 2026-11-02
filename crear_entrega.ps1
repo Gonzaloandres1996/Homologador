@@ -23,18 +23,10 @@ $publishSource = Join-Path $migracionDir "publish\*"
 Copy-Item -Path $publishSource -Destination $ejecutableDir -Recurse -Force
 
 # 2. Base de Datos
-Write-Host "2. Copiando script SQL y generando backup .bak..."
+Write-Host "2. Copiando script SQL oficial..."
 $sqlSource = Join-Path $migracionDir "02_Crear_BD_Simplificada_SSMS.sql"
 Copy-Item -Path $sqlSource -Destination $bdDir -Force
-
-$publicBak = "C:\Users\Public\DataHomologator_Migracion.bak"
-$backupSql = "BACKUP DATABASE [DataHomologator_Migracion] TO DISK = '$publicBak' WITH FORMAT, INIT;"
-& sqlcmd -S ".\SQLEXPRESS" -E -C -Q $backupSql
-
-if (Test-Path $publicBak) {
-    Move-Item -Path $publicBak -Destination (Join-Path $bdDir "DataHomologator_Migracion.bak") -Force
-    Write-Host "-> Backup .bak copiado a 2_BaseDeDatos exitosamente."
-}
+Write-Host "-> Script SQL copiado a 2_BaseDeDatos exitosamente."
 
 # 3. Código Fuente (sin bin, obj ni .vs)
 Write-Host "3. Copiando codigo fuente limpio..."
@@ -66,11 +58,10 @@ CONTENIDO DEL PAQUETE:
    * Pantalla de login corporativa 'Homologador carga masiva DDC'. Ingrese con usuario o correo corporativo.
 
 2_BaseDeDatos/
-   Contiene dos opciones para levantar la base de datos 'DataHomologator_Migracion':
-   - Opcion A (Recomendada): '02_Crear_BD_Simplificada_SSMS.sql'
+   Contiene el script oficial para levantar la base de datos 'DataHomologator_Migracion':
+   - '02_Crear_BD_Simplificada_SSMS.sql'
      Ejecutar en SQL Server Management Studio (SSMS) con F5.
-   - Opcion B: 'DataHomologator_Migracion.bak'
-     Restaurar con clic derecho en SSMS -> 'Restore Database'.
+     Crea el esquema relacional completo (14 tablas) y precarga las 122 reglas oficiales validadas.
 
 3_CodigoFuente/
    Solucion completa ('Homologador.sln') y proyectos C# en 'src/'.
@@ -86,20 +77,14 @@ INSTRUCCIONES DE BASE DE DATOS
 
 Base de datos: DataHomologator_Migracion
 Tablas: 14 tablas relacionales (Usuarios, Catalogos, Mapeos, Registros)
-Datos iniciales: 316 reglas de homologacion DDC precargadas y usuarios registrados del sistema.
+Datos iniciales: 122 reglas de homologacion DDC validadas y usuarios registrados del sistema.
 
-OPCION 1 (Recomendada - Script SQL):
+INSTRUCCIONES DE INSTALACION:
 1. Abrir Microsoft SQL Server Management Studio (SSMS).
 2. Conectarse a su servidor (ej. .\SQLEXPRESS o localhost).
 3. Abrir el archivo '02_Crear_BD_Simplificada_SSMS.sql'.
 4. Presionar F5 o hacer clic en 'Execute'.
-5. La base de datos y todos los datos quedaran listos de forma inmediata.
-
-OPCION 2 (Backup .bak):
-1. Abrir SSMS y conectarse al servidor.
-2. Clic derecho en 'Databases' -> 'Restore Database...'.
-3. Seleccionar 'Device', buscar el archivo 'DataHomologator_Migracion.bak'.
-4. Confirmar la restauracion.
+5. La base de datos y todos los datos oficiales quedaran listos de forma inmediata.
 
 USUARIOS REGISTRADOS EN EL SISTEMA:
 (Puede ingresar con el prefijo de usuario o el correo completo; contraseña predeterminada: admin123.)
