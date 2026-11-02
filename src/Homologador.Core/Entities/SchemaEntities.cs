@@ -21,7 +21,6 @@ public class UserReport
     public User User { get; set; } = null!;
 
     public int ReportId { get; set; }
-    public Report Report { get; set; } = null!;
 }
 
 public class DataSource
@@ -145,8 +144,6 @@ public class Report
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAt { get; set; }
-
-    public ICollection<UserReport> UserReports { get; set; } = new List<UserReport>();
 }
 
 public class RegistroRecepcion
@@ -157,7 +154,6 @@ public class RegistroRecepcion
     public decimal? Kg { get; set; }
     public string Estado { get; set; } = "Cargado";
     public int ReportId { get; set; }
-    public Report Report { get; set; } = null!;
 }
 
 public class RegistroCalidad
@@ -167,7 +163,6 @@ public class RegistroCalidad
     public string? Productor { get; set; }
     public string Estado { get; set; } = "Cargado";
     public int ReportId { get; set; }
-    public Report Report { get; set; } = null!;
 }
 
 public class RegistroProduccion
@@ -179,5 +174,4 @@ public class RegistroProduccion
     public string? Calibre { get; set; }
     public string Estado { get; set; } = "Cargado";
     public int ReportId { get; set; }
-    public Report Report { get; set; } = null!;
 }

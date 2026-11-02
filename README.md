@@ -50,12 +50,14 @@ flowchart TD
         direction TB
         Host["AzureApiHost (Kestrel Standalone / Embedded)"]
         Controllers["Controllers (Auth, Reports, Records, Admin)"]
-        DbContext["MigracionDbContext (EF Core)"]
+        ConfigDb["ConfigDbContext (EF Core)"]
+        AzureDb["AzureDbContext (EF Core)"]
     end
 
     subgraph Externo ["Orígenes de Datos Externos"]
         PackDB[("SQL Server Packing (Read-Only)")]
-        AzDB[("Azure SQL Database / SQLEXPRESS")]
+        ConfDB[("HomologatorConfig (Configuración y Pipelines)")]
+        AzDB[("HomologatorAzure (Usuarios y Persistencia)")]
     end
 
     MainForm --> ApiClient
@@ -64,8 +66,10 @@ flowchart TD
     MainForm --> FileGen
     MainForm --> IdExtractor
     ApiClient -->|"HTTPS REST + JWT"| Controllers
-    Controllers --> DbContext
-    DbContext --> AzDB
+    Controllers --> ConfigDb
+    Controllers --> AzureDb
+    ConfigDb --> ConfDB
+    AzureDb --> AzDB
     QueryExec -->|"ADO.NET TCP 1433 (VPN)"| PackDB
 ```
 
@@ -79,7 +83,7 @@ flowchart TD
 
 ## 3. Base de Datos y Modelo Relacional
 
-La base de datos relacional (`DataHomologator_Migracion`) consta de **14 tablas relacionales**, diseñada sin identificadores GUID y utilizando `INT IDENTITY(1,1)` junto a códigos formateados (`Codigo` computado persistido de 4 y 6 dígitos).
+El sistema desacopla el almacenamiento en dos bases de datos relacionales independientes: **`HomologatorConfig`** (8 tablas para orígenes, consultas y pipelines de transformación) y **`HomologatorAzure`** (5 tablas para usuarios y persistencia de registros generados). Diseñado sin identificadores GUID, utilizando `INT IDENTITY(1,1)` y claves foráneas lógicas entre contextos.
 
 ```mermaid
 erDiagram
@@ -95,8 +99,8 @@ erDiagram
     Reports ||--o{ RegistrosRecepcion : "persiste"
     Reports ||--o{ RegistrosCalidad : "persiste"
     Reports ||--o{ RegistrosProduccion : "persiste"
-    Reports ||--o{ ExecutionLogs : "audita"
-    Users ||--o{ ExecutionLogs : "opera"
+
+
 ```
 
 ### Estructura por Bloques Funcionales
@@ -121,7 +125,7 @@ erDiagram
 * **`dbo.RegistrosRecepcion`**: Tabla con clave primaria `Lote` (PK natural). Almacena lotes generados con fecha, productor, kilos y estado (`Cargado`).
 * **`dbo.RegistrosCalidad`**: Tabla con clave primaria `Lote` (PK natural independiente, desacoplada físicamente de Recepción para evitar bloqueos cruzados en planta).
 * **`dbo.RegistrosProduccion`**: Tabla con clave primaria compuesta `(ReportId, LoteProceso, CodigoPallet)`. Permite que un mismo lote de proceso (`AN051xxxxx`) registre múltiples líneas notificadas (pallets/tarjas) sin colisión.
-* **`dbo.ExecutionLogs`**: Registro histórico de cada archivo generado (filas extraídas, filas exportadas, tiempo en segundos, estado y usuario ejecutor).
+
 
 ---
 

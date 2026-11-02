@@ -10,7 +10,8 @@ namespace Homologador.AzureApi;
 public static class AzureApiHost
 {
     public const string DefaultBaseUrl = "http://localhost:5080";
-    public const string DefaultConfigDb = "Server=.\\SQLEXPRESS;Database=DataHomologator_Migracion;Trusted_Connection=True;TrustServerCertificate=True;";
+    public const string DefaultConfigDb = "Server=.\\SQLEXPRESS;Database=HomologatorConfig;Trusted_Connection=True;TrustServerCertificate=True;";
+    public const string DefaultAzureDb = "Server=.\\SQLEXPRESS;Database=HomologatorAzure;Trusted_Connection=True;TrustServerCertificate=True;";
     public const string DefaultEncryptionKey = "/cv1xATwDdZyG+Hr8AE43a9dEHrw5KMC2Zsgobdyq0K0YoFUo/W3+J83MhoELZPr";
     public const string DefaultJwtSecret = "uwfKkYR04O/12xU3TnpX26JhiO+mhj7maa5H7utyGt1SsYJU2N18FCFmeF+tMvEu8ot5JOmu4cMMWc81hYGhxg==";
 
@@ -23,19 +24,25 @@ public static class AzureApiHost
             builder.WebHost.UseUrls(urls);
         }
 
-        var connStr = builder.Configuration.GetConnectionString("MigracionDb")
-                      ?? builder.Configuration.GetConnectionString("ConfigDb")
-                      ?? DefaultConfigDb;
-        if (!connStr.Contains("DataHomologator_Migracion", StringComparison.OrdinalIgnoreCase))
+        var configConnStr = builder.Configuration.GetConnectionString("ConfigDb");
+        if (string.IsNullOrWhiteSpace(configConnStr) || configConnStr.Contains("Database=DataHomologator;", StringComparison.OrdinalIgnoreCase))
         {
-            connStr = DefaultConfigDb;
+            configConnStr = DefaultConfigDb;
         }
+
+        var azureConnStr = builder.Configuration.GetConnectionString("AzureDb");
+        if (string.IsNullOrWhiteSpace(azureConnStr) || azureConnStr.Contains("Database=DataHomologator;", StringComparison.OrdinalIgnoreCase))
+        {
+            azureConnStr = DefaultAzureDb;
+        }
+
         var encKey = builder.Configuration["Encryption:Key"] ?? DefaultEncryptionKey;
         var jwtSecret = builder.Configuration["Jwt:Secret"] ?? DefaultJwtSecret;
         var jwtIssuer = builder.Configuration["Jwt:Issuer"] ?? "Homologador.AzureApi";
         var jwtAudience = builder.Configuration["Jwt:Audience"] ?? "Homologador.WinForms";
 
-        builder.Services.AddDbContext<MigracionDbContext>(opt => opt.UseSqlServer(connStr));
+        builder.Services.AddDbContext<ConfigDbContext>(opt => opt.UseSqlServer(configConnStr));
+        builder.Services.AddDbContext<AzureDbContext>(opt => opt.UseSqlServer(azureConnStr));
         builder.Services.AddSingleton<IEncryptionService>(_ => new EncryptionService(encKey));
         builder.Services.AddSingleton<ISqlConnectionTester, SqlConnectionTester>();
         builder.Services.AddSingleton<IExternalQueryExecutor, ExternalQueryExecutor>();
@@ -67,7 +74,12 @@ public static class AzureApiHost
         app.UseAuthentication();
         app.UseAuthorization();
         app.MapControllers();
-        app.MapGet("/api/health", () => Results.Ok(new { status = "Online", database = "DataHomologator_Migracion" }));
+        app.MapGet("/api/health", () => Results.Ok(new
+        {
+            status = "Online",
+            configDb = "HomologatorConfig",
+            azureDb = "HomologatorAzure"
+        }));
 
         return app;
     }
@@ -75,7 +87,7 @@ public static class AzureApiHost
     public static async Task EnsureDefaultUsersReadyAsync(IServiceProvider services)
     {
         using var scope = services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<MigracionDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<AzureDbContext>();
 
         var users = await db.Users.ToListAsync();
         bool changed = false;

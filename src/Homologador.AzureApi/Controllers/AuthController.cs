@@ -15,10 +15,10 @@ namespace Homologador.AzureApi.Controllers;
 [Route("api/auth")]
 public class AuthController : ControllerBase
 {
-    private readonly MigracionDbContext _db;
+    private readonly AzureDbContext _db;
     private readonly IConfiguration _config;
 
-    public AuthController(MigracionDbContext db, IConfiguration config)
+    public AuthController(AzureDbContext db, IConfiguration config)
     {
         _db = db;
         _config = config;

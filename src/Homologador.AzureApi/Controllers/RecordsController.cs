@@ -14,11 +14,13 @@ namespace Homologador.AzureApi.Controllers;
 [Route("api/records")]
 public class RecordsController : ControllerBase
 {
-    private readonly MigracionDbContext _db;
+    private readonly AzureDbContext _azureDb;
+    private readonly ConfigDbContext _configDb;
 
-    public RecordsController(MigracionDbContext db)
+    public RecordsController(AzureDbContext azureDb, ConfigDbContext configDb)
     {
-        _db = db;
+        _azureDb = azureDb;
+        _configDb = configDb;
     }
 
     [HttpPost("mark-generated")]
@@ -44,7 +46,7 @@ public class RecordsController : ControllerBase
 
         if (request.TargetArea.StartsWith("Producc", StringComparison.OrdinalIgnoreCase))
         {
-            var existingKeys = (await _db.RegistrosProduccion
+            var existingKeys = (await _azureDb.RegistrosProduccion
                 .AsNoTracking()
                 .Where(x => x.ReportId == request.ReportId)
                 .Select(x => x.LoteProceso + "|" + x.CodigoPallet)
@@ -76,7 +78,7 @@ public class RecordsController : ControllerBase
                     codigoPallet = row.Calibre ?? parts[0];
                 }
 
-                _db.RegistrosProduccion.Add(new RegistroProduccion
+                _azureDb.RegistrosProduccion.Add(new RegistroProduccion
                 {
                     LoteProceso = loteProceso,
                     CodigoPallet = codigoPallet,
@@ -91,13 +93,13 @@ public class RecordsController : ControllerBase
         }
         else if (request.TargetArea.StartsWith("Calidad", StringComparison.OrdinalIgnoreCase))
         {
-            var existingLots = (await _db.RegistrosCalidad
+            var existingLots = (await _azureDb.RegistrosCalidad
                 .AsNoTracking()
                 .Select(x => x.Lote)
                 .ToListAsync(ct))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-            var recepcionProductorByLote = await _db.RegistrosRecepcion
+            var recepcionProductorByLote = await _azureDb.RegistrosRecepcion
                 .AsNoTracking()
                 .ToDictionaryAsync(x => x.Lote, x => x.Productor, StringComparer.OrdinalIgnoreCase, ct);
 
@@ -118,7 +120,7 @@ public class RecordsController : ControllerBase
                     productor = recProd;
                 }
 
-                _db.RegistrosCalidad.Add(new RegistroCalidad
+                _azureDb.RegistrosCalidad.Add(new RegistroCalidad
                 {
                     Lote = key,
                     FechaHoraCreacionArchivo = now,
@@ -131,7 +133,7 @@ public class RecordsController : ControllerBase
         }
         else // Recepción
         {
-            var existingLots = (await _db.RegistrosRecepcion
+            var existingLots = (await _azureDb.RegistrosRecepcion
                 .AsNoTracking()
                 .Select(x => x.Lote)
                 .ToListAsync(ct))
@@ -148,7 +150,7 @@ public class RecordsController : ControllerBase
                     continue;
                 }
 
-                _db.RegistrosRecepcion.Add(new RegistroRecepcion
+                _azureDb.RegistrosRecepcion.Add(new RegistroRecepcion
                 {
                     Lote = key,
                     FechaHoraCreacionArchivo = now,
@@ -161,7 +163,7 @@ public class RecordsController : ControllerBase
             }
         }
 
-        await _db.SaveChangesAsync(ct);
+        await _azureDb.SaveChangesAsync(ct);
 
         return Ok(new MarkGeneratedResponse(
             InsertedCount: inserted,
@@ -177,7 +179,7 @@ public class RecordsController : ControllerBase
         [FromQuery] string? search = null,
         CancellationToken ct = default)
     {
-        var report = await _db.Reports.AsNoTracking().FirstOrDefaultAsync(r => r.Id == reportId, ct);
+        var report = await _configDb.Reports.AsNoTracking().FirstOrDefaultAsync(r => r.Id == reportId, ct);
         if (report == null)
         {
             return NotFound(new { message = "Reporte no encontrado." });
@@ -200,18 +202,21 @@ public class RecordsController : ControllerBase
         List<int>? allowedReportIds = null;
         if (!isAdmin)
         {
-            allowedReportIds = await _db.UserReports
+            allowedReportIds = await _azureDb.UserReports
                 .AsNoTracking()
                 .Where(ur => ur.UserId == userId)
                 .Select(ur => ur.ReportId)
                 .ToListAsync(ct);
         }
 
+        var reportsMap = await _configDb.Reports
+            .AsNoTracking()
+            .ToDictionaryAsync(r => r.Id, ct);
+
         if (area.StartsWith("Producc", StringComparison.OrdinalIgnoreCase))
         {
-            var q = _db.RegistrosProduccion
+            var q = _azureDb.RegistrosProduccion
                 .AsNoTracking()
-                .Include(x => x.Report)
                 .AsQueryable();
 
             if (allowedReportIds != null)
@@ -239,24 +244,27 @@ public class RecordsController : ControllerBase
                 .Take(1000)
                 .ToListAsync(ct);
 
-            return Ok(list.Select(x => new RecordGridRowDto(
-                CodigoOrLote: x.CodigoPallet,
-                LoteOrProceso: x.LoteProceso,
-                Productor: x.Productor,
-                Kg: null,
-                Calibre: x.Calibre,
-                Estado: "Cargado",
-                FechaHoraCreacionArchivo: x.FechaHoraCreacionArchivo,
-                ReportCodigo: x.Report.Codigo,
-                ReportName: x.Report.Name
-            )).ToList());
+            return Ok(list.Select(x =>
+            {
+                reportsMap.TryGetValue(x.ReportId, out var rep);
+                return new RecordGridRowDto(
+                    CodigoOrLote: x.CodigoPallet,
+                    LoteOrProceso: x.LoteProceso,
+                    Productor: x.Productor,
+                    Kg: null,
+                    Calibre: x.Calibre,
+                    Estado: "Cargado",
+                    FechaHoraCreacionArchivo: x.FechaHoraCreacionArchivo,
+                    ReportCodigo: rep?.Codigo ?? string.Empty,
+                    ReportName: rep?.Name ?? string.Empty
+                );
+            }).ToList());
         }
 
         if (area.StartsWith("Calidad", StringComparison.OrdinalIgnoreCase))
         {
-            var q = _db.RegistrosCalidad
+            var q = _azureDb.RegistrosCalidad
                 .AsNoTracking()
-                .Include(x => x.Report)
                 .AsQueryable();
 
             if (allowedReportIds != null)
@@ -281,24 +289,27 @@ public class RecordsController : ControllerBase
                 .Take(1000)
                 .ToListAsync(ct);
 
-            return Ok(list.Select(x => new RecordGridRowDto(
-                CodigoOrLote: x.Lote,
-                LoteOrProceso: x.Lote,
-                Productor: x.Productor,
-                Kg: null,
-                Calibre: null,
-                Estado: "Cargado",
-                FechaHoraCreacionArchivo: x.FechaHoraCreacionArchivo,
-                ReportCodigo: x.Report.Codigo,
-                ReportName: x.Report.Name
-            )).ToList());
+            return Ok(list.Select(x =>
+            {
+                reportsMap.TryGetValue(x.ReportId, out var rep);
+                return new RecordGridRowDto(
+                    CodigoOrLote: x.Lote,
+                    LoteOrProceso: x.Lote,
+                    Productor: x.Productor,
+                    Kg: null,
+                    Calibre: null,
+                    Estado: "Cargado",
+                    FechaHoraCreacionArchivo: x.FechaHoraCreacionArchivo,
+                    ReportCodigo: rep?.Codigo ?? string.Empty,
+                    ReportName: rep?.Name ?? string.Empty
+                );
+            }).ToList());
         }
 
         // Default: Recepción
         {
-            var q = _db.RegistrosRecepcion
+            var q = _azureDb.RegistrosRecepcion
                 .AsNoTracking()
-                .Include(x => x.Report)
                 .AsQueryable();
 
             if (allowedReportIds != null)
@@ -323,17 +334,21 @@ public class RecordsController : ControllerBase
                 .Take(1000)
                 .ToListAsync(ct);
 
-            return Ok(list.Select(x => new RecordGridRowDto(
-                CodigoOrLote: x.Lote,
-                LoteOrProceso: x.Lote,
-                Productor: x.Productor,
-                Kg: x.Kg,
-                Calibre: null,
-                Estado: "Cargado",
-                FechaHoraCreacionArchivo: x.FechaHoraCreacionArchivo,
-                ReportCodigo: x.Report.Codigo,
-                ReportName: x.Report.Name
-            )).ToList());
+            return Ok(list.Select(x =>
+            {
+                reportsMap.TryGetValue(x.ReportId, out var rep);
+                return new RecordGridRowDto(
+                    CodigoOrLote: x.Lote,
+                    LoteOrProceso: x.Lote,
+                    Productor: x.Productor,
+                    Kg: x.Kg,
+                    Calibre: null,
+                    Estado: "Cargado",
+                    FechaHoraCreacionArchivo: x.FechaHoraCreacionArchivo,
+                    ReportCodigo: rep?.Codigo ?? string.Empty,
+                    ReportName: rep?.Name ?? string.Empty
+                );
+            }).ToList());
         }
     }
 

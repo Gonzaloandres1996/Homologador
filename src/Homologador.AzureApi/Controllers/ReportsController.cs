@@ -14,12 +14,14 @@ namespace Homologador.AzureApi.Controllers;
 [Route("api/reports")]
 public class ReportsController : ControllerBase
 {
-    private readonly MigracionDbContext _db;
+    private readonly AzureDbContext _azureDb;
+    private readonly ConfigDbContext _configDb;
     private readonly IEncryptionService _encryption;
 
-    public ReportsController(MigracionDbContext db, IEncryptionService encryption)
+    public ReportsController(AzureDbContext azureDb, ConfigDbContext configDb, IEncryptionService encryption)
     {
-        _db = db;
+        _azureDb = azureDb;
+        _configDb = configDb;
         _encryption = encryption;
     }
 
@@ -29,7 +31,7 @@ public class ReportsController : ControllerBase
         var userId = GetCurrentUserId();
         var isAdmin = User.IsInRole("Admin");
 
-        var query = _db.Reports
+        var query = _configDb.Reports
             .AsNoTracking()
             .Include(r => r.QueryDefinition)
             .Include(r => r.MappingPipeline)
@@ -38,7 +40,7 @@ public class ReportsController : ControllerBase
 
         if (!isAdmin)
         {
-            var assignedIds = await _db.UserReports
+            var assignedIds = await _azureDb.UserReports
                 .AsNoTracking()
                 .Where(ur => ur.UserId == userId)
                 .Select(ur => ur.ReportId)
@@ -74,7 +76,7 @@ public class ReportsController : ControllerBase
 
         if (!isAdmin)
         {
-            var hasAccess = await _db.UserReports
+            var hasAccess = await _azureDb.UserReports
                 .AsNoTracking()
                 .AnyAsync(ur => ur.UserId == userId && ur.ReportId == id, ct);
 
@@ -84,7 +86,7 @@ public class ReportsController : ControllerBase
             }
         }
 
-        var report = await _db.Reports
+        var report = await _configDb.Reports
             .AsNoTracking()
             .Include(r => r.QueryDefinition)
                 .ThenInclude(q => q.DataSource)
@@ -117,7 +119,7 @@ public class ReportsController : ControllerBase
             .Distinct()
             .ToList();
 
-        var lookups = await _db.LookupTables
+        var lookups = await _configDb.LookupTables
             .AsNoTracking()
             .Include(t => t.Entries)
             .Where(t => lookupIds.Contains(t.Id))
@@ -127,7 +129,7 @@ public class ReportsController : ControllerBase
         List<string> alreadyGeneratedKeys;
         if (report.TargetArea.StartsWith("Producc", StringComparison.OrdinalIgnoreCase))
         {
-            alreadyGeneratedKeys = await _db.RegistrosProduccion
+            alreadyGeneratedKeys = await _azureDb.RegistrosProduccion
                 .AsNoTracking()
                 .Where(x => x.ReportId == id && (x.Estado == "Cargado" || x.Estado == "Generado"))
                 .Select(x => x.LoteProceso + "|" + x.CodigoPallet)
@@ -136,7 +138,7 @@ public class ReportsController : ControllerBase
         }
         else if (report.TargetArea.StartsWith("Calidad", StringComparison.OrdinalIgnoreCase))
         {
-            alreadyGeneratedKeys = await _db.RegistrosCalidad
+            alreadyGeneratedKeys = await _azureDb.RegistrosCalidad
                 .AsNoTracking()
                 .Where(x => x.Estado == "Cargado" || x.Estado == "Generado")
                 .Select(x => x.Lote)
@@ -144,7 +146,7 @@ public class ReportsController : ControllerBase
         }
         else
         {
-            alreadyGeneratedKeys = await _db.RegistrosRecepcion
+            alreadyGeneratedKeys = await _azureDb.RegistrosRecepcion
                 .AsNoTracking()
                 .Where(x => x.Estado == "Cargado" || x.Estado == "Generado")
                 .Select(x => x.Lote)
