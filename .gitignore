@@ -4,6 +4,7 @@
 [Ll]og/
 [Ll]ogs/
 publish/
+Release/
 
 ## Visual Studio cache and settings
 .vs/
