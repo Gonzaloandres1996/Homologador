@@ -181,18 +181,3 @@ public class RegistroProduccion
     public int ReportId { get; set; }
     public Report Report { get; set; } = null!;
 }
-
-public class ExecutionLog
-{
-    public int Id { get; set; }
-    public int ReportId { get; set; }
-    public Report Report { get; set; } = null!;
-    public int? UserId { get; set; }
-    public User? User { get; set; }
-    public DateTime ExecutedAt { get; set; } = DateTime.UtcNow;
-    public int RowsExtracted { get; set; }
-    public int RowsOutput { get; set; }
-    public decimal DurationSeconds { get; set; }
-    public string Status { get; set; } = "Success"; // 'Success' | 'Empty' | 'Failed'
-    public string? ErrorMessage { get; set; }
-}

@@ -161,18 +161,6 @@ public class RecordsController : ControllerBase
             }
         }
 
-        _db.ExecutionLogs.Add(new ExecutionLog
-        {
-            ReportId = request.ReportId,
-            UserId = userId > 0 ? userId : null,
-            ExecutedAt = now,
-            RowsExtracted = request.RowsExtracted,
-            RowsOutput = inserted,
-            DurationSeconds = request.DurationSeconds,
-            Status = inserted > 0 ? "Success" : "Empty",
-            ErrorMessage = null
-        });
-
         await _db.SaveChangesAsync(ct);
 
         return Ok(new MarkGeneratedResponse(

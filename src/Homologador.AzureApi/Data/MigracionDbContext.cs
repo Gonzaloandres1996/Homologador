@@ -23,7 +23,6 @@ public class MigracionDbContext : DbContext
     public DbSet<RegistroRecepcion> RegistrosRecepcion => Set<RegistroRecepcion>();
     public DbSet<RegistroCalidad> RegistrosCalidad => Set<RegistroCalidad>();
     public DbSet<RegistroProduccion> RegistrosProduccion => Set<RegistroProduccion>();
-    public DbSet<ExecutionLog> ExecutionLogs => Set<ExecutionLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -124,15 +123,6 @@ public class MigracionDbContext : DbContext
             e.ToTable("RegistrosProduccion", "dbo");
             e.HasKey(x => new { x.ReportId, x.LoteProceso, x.CodigoPallet });
             e.HasOne(x => x.Report).WithMany().HasForeignKey(x => x.ReportId);
-        });
-
-        modelBuilder.Entity<ExecutionLog>(e =>
-        {
-            e.ToTable("ExecutionLogs", "dbo");
-            e.HasKey(x => x.Id);
-            e.Property(x => x.DurationSeconds).HasPrecision(10, 3);
-            e.HasOne(x => x.Report).WithMany().HasForeignKey(x => x.ReportId);
-            e.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId);
         });
     }
 }

@@ -256,24 +256,6 @@ CREATE NONCLUSTERED INDEX IX_RegistrosProduccion_LoteProceso
     ON dbo.RegistrosProduccion (ReportId, LoteProceso)
     INCLUDE (CodigoPallet, Productor, Calibre, FechaHoraCreacionArchivo, Estado);
 
--- 14. BITÁCORA DE EJECUCIONES POR USUARIO Y REPORTE
-CREATE TABLE dbo.ExecutionLogs (
-    Id              INT IDENTITY(1,1) NOT NULL,
-    ReportId        INT               NOT NULL,
-    UserId          INT               NULL,
-    ExecutedAt      DATETIME2(0)      NOT NULL CONSTRAINT DF_ExecLogs_Date DEFAULT (SYSUTCDATETIME()),
-    RowsExtracted   INT               NOT NULL,
-    RowsOutput      INT               NOT NULL,
-    DurationSeconds DECIMAL(10, 3)    NOT NULL,
-    Status          VARCHAR(20)       NOT NULL, -- 'Success' | 'Empty' | 'Failed'
-    ErrorMessage    NVARCHAR(2000)    NULL,
-    CONSTRAINT PK_ExecutionLogs        PRIMARY KEY CLUSTERED (Id),
-    CONSTRAINT FK_ExecutionLogs_Report FOREIGN KEY (ReportId) REFERENCES dbo.Reports(Id),
-    CONSTRAINT FK_ExecutionLogs_User   FOREIGN KEY (UserId)   REFERENCES dbo.Users(Id)
-);
-GO
-
-
 /* =========================================================================================
    BLOQUE 4: CARGA DE CONFIGURACIÓN Y CATÁLOGOS OFICIALES (122 REGLAS / 3 REPORTES)
    Base de datos 100% autocontenida: no requiere de bases de datos intermedias ni externas.
