@@ -9,10 +9,10 @@ Sistema de extracción, transformación y homologación de datos operativos desd
 El **Homologador DDC** resuelve la interoperabilidad entre los sistemas informáticos heterogéneos de los packings agrícolas externos (SQL Server locales) y el ERP corporativo SAP. 
 
 ### Alcance Operativo
-El sistema opera sobre **3 reportes oficiales certificados** para la operación de Andinexia:
-1. **Calidad ANDINEXIA**: Homologación de análisis de calidad, tolerancias, defectos y parámetros fitosanitarios (80 reglas de mapeo).
+El sistema opera sobre **3 reportes oficiales certificados** para la operación de Packing externos:
+1. **Calidad Packing externos**: Homologación de análisis de calidad, tolerancias, defectos y parámetros fitosanitarios (80 reglas de mapeo).
 2. **Carga Masiva SAP Recepción MP**: Homologación de recepción de fruta, productores, variedades, guías y pesajes (23 reglas de mapeo).
-3. **Producción ANDINEXIA**: Homologación de procesos de embalaje, rendimientos, calibres y tarjas/pallets (19 reglas de mapeo).
+3. **Producción Packing externos**: Homologación de procesos de embalaje, rendimientos, calibres y tarjas/pallets (19 reglas de mapeo).
 
 ### Principios de Diseño
 * **Cero almacenamiento redundante**: No se almacenan copias temporales ni archivos JSON con datos del packing en la nube. La fuente de verdad operativa es la base de datos del packing y el respaldo físico es el archivo Excel/CSV generado.
@@ -149,7 +149,7 @@ sequenceDiagram
     API->>DB_DDC: Consulta reportes autorizados en UserReports
     API-->>UI: Listado de tarjetas de reportes
     
-    Op->>UI: Selecciona reporte (ej: "Producción ANDINEXIA")
+    Op->>UI: Selecciona reporte (ej: "Producción Packing externos")
     UI->>API: GET /api/reports/{id}/execution-context
     API->>DB_DDC: Obtiene Query, Reglas, Lookups y claves ya generadas (AlreadyGeneratedKeys)
     API-->>UI: Contexto de ejecución completo
