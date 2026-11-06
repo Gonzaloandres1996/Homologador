@@ -1,5 +1,6 @@
 using System.Data;
 using System.Diagnostics;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Homologador.Core.DTOs;
 using Microsoft.Data.SqlClient;
@@ -149,7 +150,87 @@ public class ExternalQueryExecutor : IExternalQueryExecutor
             builder.IntegratedSecurity = true;
         }
 
+        ApplyDaiaOverride(builder);
+
         return builder.ConnectionString;
+    }
+
+    private static void ApplyDaiaOverride(SqlConnectionStringBuilder builder)
+    {
+        try
+        {
+            var settingsPath = ResolveAppSettingsPath();
+            if (settingsPath is null || !File.Exists(settingsPath))
+            {
+                return;
+            }
+
+            using var doc = JsonDocument.Parse(File.ReadAllText(settingsPath));
+            var root = doc.RootElement;
+
+            if (!root.TryGetProperty("DaiaOverrideDatabase", out var dbProp) ||
+                dbProp.ValueKind != JsonValueKind.String)
+            {
+                return;
+            }
+
+            var overrideDb = dbProp.GetString()?.Trim();
+            if (string.IsNullOrWhiteSpace(overrideDb))
+            {
+                return;
+            }
+
+            builder.InitialCatalog = overrideDb;
+
+            if (root.TryGetProperty("DaiaOverrideServer", out var srvProp) &&
+                srvProp.ValueKind == JsonValueKind.String)
+            {
+                var overrideServer = srvProp.GetString()?.Trim();
+                if (!string.IsNullOrWhiteSpace(overrideServer))
+                {
+                    builder.DataSource = overrideServer;
+                }
+            }
+
+            if (root.TryGetProperty("DaiaOverrideTrustedConnection", out var trustedProp) &&
+                trustedProp.ValueKind is JsonValueKind.True or JsonValueKind.False &&
+                trustedProp.GetBoolean())
+            {
+                builder.IntegratedSecurity = true;
+                builder.Remove("User ID");
+                builder.Remove("Password");
+            }
+        }
+        catch
+        {
+            // Ignore malformed or inaccessible local override file and keep original DataSource
+        }
+    }
+
+    private static string? ResolveAppSettingsPath()
+    {
+        foreach (var startDir in new[] { AppDomain.CurrentDomain.BaseDirectory, Directory.GetCurrentDirectory() })
+        {
+            var dir = new DirectoryInfo(startDir);
+            while (dir is not null)
+            {
+                var repoCandidate = Path.Combine(dir.FullName, "src", "Homologador.AzureApi", "appsettings.json");
+                if (File.Exists(repoCandidate))
+                {
+                    return repoCandidate;
+                }
+                dir = dir.Parent;
+            }
+        }
+
+        var localCandidate = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "appsettings.json");
+        if (File.Exists(localCandidate))
+        {
+            return localCandidate;
+        }
+
+        var cwdCandidate = Path.Combine(Directory.GetCurrentDirectory(), "appsettings.json");
+        return File.Exists(cwdCandidate) ? cwdCandidate : null;
     }
 
     private static string CleanStoredProcedureName(string raw)
