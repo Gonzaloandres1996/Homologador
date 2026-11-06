@@ -62,6 +62,7 @@ Get-ChildItem -Path $releaseDir | Select-Object Name, Length, LastWriteTime | Fo
 if ($GitHubToken) {
     Write-Host "`nSubiendo release a GitHub..." -ForegroundColor Yellow
     vpk upload github --repoUrl "https://github.com/Gonzaloandres1996/Homologador" `
+                      -o "$releaseDir" `
                       --publish `
                       --token "$GitHubToken"
     Write-Host "-> Release publicado exitosamente en GitHub!" -ForegroundColor Green
