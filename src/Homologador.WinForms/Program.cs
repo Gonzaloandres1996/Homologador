@@ -20,13 +20,12 @@ internal static class Program
         CheckForUpdates();
 
         var apiUrl = AzureApiHost.DefaultBaseUrl;
-        var apiClient = new HomologadorApiClient(apiUrl);
+        using var apiClient = new HomologadorApiClient(apiUrl);
 
         WebApplication? embeddedApi = null;
         if (!apiClient.IsHealthyAsync().GetAwaiter().GetResult())
         {
             embeddedApi = AzureApiHost.Build(args, apiUrl);
-            AzureApiHost.EnsureDefaultUsersReadyAsync(embeddedApi.Services).GetAwaiter().GetResult();
             embeddedApi.StartAsync().GetAwaiter().GetResult();
         }
 
@@ -42,6 +41,7 @@ internal static class Program
 
                 using var mainForm = new MainForm(apiClient);
                 Application.Run(mainForm);
+                apiClient.Logout();
 
                 if (!mainForm.SwitchUserRequested)
                 {

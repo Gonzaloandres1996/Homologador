@@ -21,3 +21,7 @@ prer/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+## Database backups
+*.bak
+[Bb]ackups/

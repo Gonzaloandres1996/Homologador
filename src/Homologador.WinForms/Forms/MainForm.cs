@@ -28,6 +28,8 @@ public partial class MainForm : Form
 
     // Registros en memoria para la pantalla de ejecución
     private readonly List<PendingRecordItem> _pendingRecords = [];
+    private bool _grmPersistenceKnown;
+    private bool _hasSimulatedPending;
     private IReadOnlyList<string> _fullTransformColumns = [];
 
     // Admin caches
@@ -49,7 +51,7 @@ public partial class MainForm : Form
         _isAdmin = string.Equals(user.Rol, "Admin", StringComparison.OrdinalIgnoreCase);
 
         Text = $"Homologador carga masiva DDC — {user.DisplayName} ({user.Rol})";
-        var perfilBadge = string.IsNullOrWhiteSpace(user.Perfil) ? "Administrador" : $"Perfil: {user.Perfil}";
+        var perfilBadge = string.IsNullOrWhiteSpace(user.Perfil) ? "Sin perfil Conversor" : $"Perfiles: {user.Perfil}";
         _lblUserInfo.Text = $"Usuario: {user.DisplayName} ({user.Email})   |   {perfilBadge}";
 
         if (_isAdmin)
@@ -276,9 +278,14 @@ public partial class MainForm : Form
         if (_api == null) return;
 
         _currentReport = report;
+        _currentContext = null;
+        _fullTransformColumns = [];
         _pendingRecords.Clear();
+        _grmPersistenceKnown = false;
+        _hasSimulatedPending = false;
         _gridExecution.Rows.Clear();
         _btnGenerar.Enabled = false;
+        _btnActualizar.Enabled = false;
 
         _pnlReportMenu.Visible = false;
         _pnlAdmin.Visible = false;
@@ -296,34 +303,30 @@ public partial class MainForm : Form
             Application.DoEvents();
 
             _currentContext = await _api.GetExecutionContextAsync(report.Id);
-            var persistedRows = await _api.GetRecordsByReportAsync(report.Id);
-
-            foreach (var rec in persistedRows)
+            var tipoProceso = TipoProceso(report.TargetArea);
+            var registros = await _api.GetPersistenciasAsync(tipoProceso);
+            _grmPersistenceKnown = true;
+            foreach (var rec in registros.Where(r => r.ReportId == report.Id))
             {
-                var kilosStr = FormatKilos(rec.Kg, rec.Calibre);
-                var isProduccion = string.Equals(report.TargetArea, "Producción", StringComparison.OrdinalIgnoreCase) ||
-                                   string.Equals(report.TargetArea, "Produccion", StringComparison.OrdinalIgnoreCase);
-                var displayLote = isProduccion && !string.IsNullOrWhiteSpace(rec.CodigoOrLote)
-                    ? $"{rec.LoteOrProceso} | {rec.CodigoOrLote}"
-                    : rec.LoteOrProceso;
-
+                var displayLote = tipoProceso == 3 && !string.IsNullOrWhiteSpace(rec.CodigoPallet)
+                    ? $"{rec.Lote} | {rec.CodigoPallet}"
+                    : rec.Lote;
                 var rowIdx = _gridExecution.Rows.Add(
-                    rec.FechaHoraCreacionArchivo.ToString("dd-MM-yyyy"),
-                    displayLote,
-                    rec.Productor ?? "-",
-                    kilosStr,
-                    "Cargado"
-                );
+                    rec.FechaHoraCreacionArchivo?.ToString("dd-MM-yyyy") ?? "-",
+                    displayLote, rec.Productor ?? "-",
+                    FormatKilos(tipoProceso == 1 ? rec.Kg : null,
+                        tipoProceso == 3 ? rec.Calibre : null), "Cargado");
                 _gridExecution.Rows[rowIdx].Tag = rec;
             }
-
-            _lblStatusText.Text = $"Persistencia cargada: {persistedRows.Count} registro(s) en base de datos.";
-            _lblStatusPending.Text = $"Cargados: {persistedRows.Count}";
+            _lblStatusText.Text = $"Persistencia GRM cargada: {_gridExecution.Rows.Count} registro(s) del reporte.";
+            _lblStatusPending.Text = $"Cargados: {_gridExecution.Rows.Count}";
+            _btnActualizar.Enabled = true;
         }
         catch (Exception ex)
         {
             _lblStatusText.Text = $"Error cargando datos: {ex.Message}";
-            MessageBox.Show($"Error al cargar la persistencia del reporte:\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show($"Error al cargar el contexto o la persistencia del reporte:\n{ex.Message}",
+                "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -347,6 +350,7 @@ public partial class MainForm : Form
             }
 
             List<Dictionary<string, object?>> rawRows;
+            var usedSimulation = false;
             try
             {
                 var extract = await _queryExecutor.ExecuteExtractAsync(
@@ -361,8 +365,7 @@ public partial class MainForm : Form
                 var ask = MessageBox.Show(
                     $"No se pudo conectar al servidor del packing externo '{ctx.DataSource.Server}' (verifique VPN activa).\n\n" +
                     $"Detalle: {sqlEx.Message}\n\n" +
-                    $"¿Desea simular la extracción con 3 lotes de prueba para validar el pipeline ({ctx.Rules.Count} columnas), " +
-                    $"visualizarlos como 'Pendiente' y poder generar el Excel?",
+                    $"¿Desea simular 3 lotes para validar el pipeline ({ctx.Rules.Count} columnas)? Se mostrarán como 'Pendiente', sin habilitar Generar ni registrar en GRM PROD.",
                     "Sin Conexión VPN — Simulación Disponible",
                     MessageBoxButtons.YesNo,
                     MessageBoxIcon.Question);
@@ -377,6 +380,7 @@ public partial class MainForm : Form
                     ctx.Report.TargetArea,
                     ctx.Rules,
                     startIndex: _gridExecution.Rows.Count + 1);
+                usedSimulation = true;
             }
 
             if (rawRows.Count == 0)
@@ -393,18 +397,16 @@ public partial class MainForm : Form
             var fullTransform = _transformationEngine.Transform(ctx.Rules, ctx.Lookups, rawRows);
             _fullTransformColumns = fullTransform.Columns;
 
-            // 3. Obtener claves primarias ya presentes en la grilla y en el contexto de ejecución
+            var tipoProceso = TipoProceso(ctx.Report.TargetArea);
+            _grmPersistenceKnown = false;
+            var persistedRecords = await _api.GetPersistenciasAsync(tipoProceso);
+            _grmPersistenceKnown = true;
+            var persistedKeys = GrmKeys(persistedRecords, tipoProceso, _currentReport.Id);
+            ConfirmGrmRows(persistedKeys);
+
+            // 3. Compare against GRM and against pending rows already in this session.
             var existingKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (ctx.AlreadyGeneratedKeys != null)
-            {
-                foreach (var k in ctx.AlreadyGeneratedKeys)
-                {
-                    if (!string.IsNullOrWhiteSpace(k))
-                    {
-                        existingKeys.Add(k.Trim());
-                    }
-                }
-            }
+            existingKeys.UnionWith(persistedKeys);
 
             foreach (DataGridViewRow row in _gridExecution.Rows)
             {
@@ -412,24 +414,10 @@ public partial class MainForm : Form
                 {
                     existingKeys.Add(pendingItem.Metadata.PrimaryKey.Trim());
                 }
-                else if (row.Tag is RecordGridRowDto rec)
+                else if (row.Tag is GrmRecepcionRecord grmRecord)
                 {
-                    if (!string.IsNullOrWhiteSpace(rec.CodigoOrLote) && !string.IsNullOrWhiteSpace(rec.LoteOrProceso))
-                    {
-                        existingKeys.Add($"{rec.LoteOrProceso}|{rec.CodigoOrLote}".Trim());
-                    }
-                    if (!string.IsNullOrWhiteSpace(rec.CodigoOrLote))
-                    {
-                        existingKeys.Add(rec.CodigoOrLote.Trim());
-                    }
-                    if (!string.IsNullOrWhiteSpace(rec.LoteOrProceso))
-                    {
-                        existingKeys.Add(rec.LoteOrProceso.Trim());
-                    }
-                }
-                else if (row.Cells["_colLote"].Value is string loteVal && !string.IsNullOrWhiteSpace(loteVal))
-                {
-                    existingKeys.Add(loteVal.Trim());
+                    var key = GrmKey(grmRecord, tipoProceso, _currentReport.Id);
+                    if (key is not null) existingKeys.Add(key);
                 }
             }
 
@@ -439,6 +427,9 @@ public partial class MainForm : Form
                 var tRow = fullTransform.Rows[i];
                 var sRow = i < rawRows.Count ? rawRows[i] : null;
                 var meta = RowIdentityExtractor.ExtractRowMetadata(ctx.Report.TargetArea, ctx.Rules, tRow, sRow);
+                if (tipoProceso == 3 && !TrySplitProductionKey(meta.PrimaryKey, out _, out _))
+                    throw new InvalidOperationException(
+                        $"La fila de Producción {i + 1} no contiene LoteProceso y CodigoPallet válidos.");
 
                 if (string.IsNullOrEmpty(meta.PrimaryKey) || existingKeys.Contains(meta.PrimaryKey))
                 {
@@ -458,6 +449,8 @@ public partial class MainForm : Form
 
             if (newPendingItems.Count == 0)
             {
+                _btnGenerar.Enabled = _pendingRecords.Count > 0 && _grmPersistenceKnown
+                    && (!_hasSimulatedPending || _isAdmin);
                 MessageBox.Show(
                     "No se encontraron registros nuevos.\nTodos los lotes obtenidos ya se encuentran cargados en la base de datos.",
                     "Sin Nuevos Registros",
@@ -483,14 +476,20 @@ public partial class MainForm : Form
                 _gridExecution.Rows[0].Tag = item;
             }
 
-            _btnGenerar.Enabled = true;
-            _lblStatusText.Text = $"Actualización completa: {newPendingItems.Count} nuevo(s) registro(s) pendiente(s) listado(s) arriba de la tabla.";
+            if (usedSimulation)
+                _hasSimulatedPending = true;
+
+            _btnGenerar.Enabled = _grmPersistenceKnown && (!_hasSimulatedPending || _isAdmin);
+            _lblStatusText.Text = _hasSimulatedPending && !_isAdmin
+                ? $"Simulación: {newPendingItems.Count} pendiente(s). Generar está bloqueado para proteger GRM PROD."
+                : $"Actualización completa: {newPendingItems.Count} nuevo(s) registro(s) pendiente(s) listado(s) arriba de la tabla.";
             _lblStatusPending.Text = $"Pendientes: {_pendingRecords.Count}  |  Cargados: {_gridExecution.Rows.Count - _pendingRecords.Count}";
         }
         catch (Exception ex)
         {
             _lblStatusText.Text = $"Error al actualizar: {ex.Message}";
             MessageBox.Show($"Error ejecutando la actualización:\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            _btnGenerar.Enabled = false;
         }
         finally
         {
@@ -508,6 +507,15 @@ public partial class MainForm : Form
             return;
         }
 
+        if (!_isAdmin && (!_grmPersistenceKnown || _hasSimulatedPending))
+        {
+            var reason = _hasSimulatedPending
+                ? "Los pendientes incluyen datos simulados y no se pueden registrar en GRM PROD."
+                : "No se pudo confirmar la persistencia GRM. Actualice el reporte antes de generar.";
+            MessageBox.Show(reason, "Generación bloqueada", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
         _btnGenerar.Enabled = false;
         var sw = Stopwatch.StartNew();
 
@@ -519,6 +527,11 @@ public partial class MainForm : Form
             // Extraer las filas transformadas de los pendientes
             var pendingTransformedRows = _pendingRecords.Select(p => p.TransformedRow).ToList();
             var pendingMetadata = _pendingRecords.Select(p => p.Metadata).ToList();
+            var tipoProceso = TipoProceso(report.TargetArea);
+            if (tipoProceso == 3 && pendingMetadata.Any(row =>
+                    !TrySplitProductionKey(row.PrimaryKey, out _, out _)))
+                throw new InvalidOperationException(
+                    "Producción requiere LoteProceso y CodigoPallet válidos antes de generar.");
 
             // Construir archivo Excel
             var generatedFile = _fileGenerator.GenerateFile(
@@ -557,52 +570,125 @@ public partial class MainForm : Form
             }
             else
             {
-                // MODO OPERADOR: Guarda en persistencia con estatus "Cargado"
-                _lblStatusText.Text = $"Registrando {pendingMetadata.Count} lote(s) en la persistencia...";
-                Application.DoEvents();
-
                 var createdAt = DateTime.UtcNow;
-                var markResp = await _api.MarkGeneratedAsync(new MarkGeneratedRequest(
-                    ReportId: report.Id,
-                    TargetArea: report.TargetArea,
-                    RowsExtracted: pendingMetadata.Count,
-                    RowsOutput: pendingMetadata.Count,
-                    DurationSeconds: Math.Round((decimal)sw.Elapsed.TotalSeconds, 3),
-                    FechaHoraCreacionArchivo: createdAt,
-                    GeneratedRows: pendingMetadata
-                ));
-
-                // Actualizar estatus en la grilla de "Pendiente" a "Cargado"
-                foreach (DataGridViewRow row in _gridExecution.Rows)
+                try
                 {
-                    if (string.Equals(row.Cells["_colEstado"].Value as string, "Pendiente", StringComparison.OrdinalIgnoreCase))
+                    GrmRecepcionRegistrationResponse response;
+                    if (tipoProceso == 1)
+                        response = await _api.RegisterRecepcionAsync(
+                            pendingMetadata.Select(row => new GrmRecepcionRegistrationItem(
+                                row.PrimaryKey, report.Id, createdAt, row.Productor, row.Kg)).ToArray());
+                    else if (tipoProceso == 2)
+                        response = await _api.RegisterCalidadAsync(
+                            pendingMetadata.Select(row => new GrmCalidadRegistrationItem(
+                                row.PrimaryKey, report.Id, createdAt, row.Productor)).ToArray());
+                    else
+                        response = await _api.RegisterProduccionAsync(
+                            pendingMetadata.Select(row =>
+                            {
+                                TrySplitProductionKey(row.PrimaryKey, out var lote, out var pallet);
+                                return new GrmProduccionRegistrationItem(lote, report.Id, pallet,
+                                    createdAt, row.Productor, row.Calibre);
+                            }).ToArray());
+
+                    HashSet<string> confirmed;
+                    if (tipoProceso == 3)
                     {
-                        row.Cells["_colEstado"].Value = "Cargado";
+                        if (response.InsertadosRegistros is null || response.ExistentesRegistros is null)
+                            throw new InvalidOperationException("GRM devolvió un resultado de Producción incompleto.");
+                        confirmed = response.InsertadosRegistros.Concat(response.ExistentesRegistros)
+                            .Where(identity => identity.ReportId == report.Id)
+                            .Select(identity => $"{identity.Lote}|{identity.CodigoPallet}")
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
                     }
+                    else
+                    {
+                        if (response.Insertados is null || response.Existentes is null)
+                            throw new InvalidOperationException("GRM devolvió un resultado incompleto.");
+                        confirmed = response.Insertados.Concat(response.Existentes)
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    }
+                    ConfirmGrmRows(confirmed);
+                    _lblStatusText.Text = $"Archivo generado en '{targetFilePath}'. GRM confirmó {confirmed.Count} lote(s); pendientes: {_pendingRecords.Count}.";
+                    MessageBox.Show(_pendingRecords.Count == 0
+                        ? $"Archivo generado en '{targetFilePath}' y registros confirmados por GRM."
+                        : $"Archivo generado en '{targetFilePath}'. Algunos lotes siguen pendientes; revise la persistencia GRM.",
+                        "Resultado de generación", MessageBoxButtons.OK,
+                        _pendingRecords.Count == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
                 }
-
-                _pendingRecords.Clear();
-                _btnGenerar.Enabled = false;
-
-                _lblStatusText.Text = $"Archivo generado en '{targetFilePath}' y {markResp.InsertedCount} lote(s) guardados en persistencia con estado 'Cargado'.";
-                _lblStatusPending.Text = $"Pendientes: 0  |  Cargados: {_gridExecution.Rows.Count}";
-
-                MessageBox.Show(
-                    $"Archivo generado exitosamente:\n{targetFilePath}\n\n" +
-                    $"• Filas exportadas: {pendingTransformedRows.Count}\n" +
-                    $"• Lotes registrados en persistencia: {markResp.InsertedCount}\n" +
-                    "• Estado actualizado a: 'Cargado'",
-                    "Generación Exitosa",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
+                catch (Exception postError)
+                {
+                    try
+                    {
+                        var persisted = await _api.GetPersistenciasAsync(tipoProceso);
+                        _grmPersistenceKnown = true;
+                        ConfirmGrmRows(GrmKeys(persisted, tipoProceso, report.Id));
+                        _lblStatusText.Text = $"No se confirmó el POST: {postError.Message}. Pendientes: {_pendingRecords.Count}.";
+                    }
+                    catch (Exception getError)
+                    {
+                        _grmPersistenceKnown = false;
+                        _btnGenerar.Enabled = false;
+                        _lblStatusText.Text = $"No se pudo confirmar GRM: {getError.Message}";
+                    }
+                    MessageBox.Show("El resultado del registro GRM fue incierto. Se consultó nuevamente cuando fue posible; revise los pendientes antes de reintentar.",
+                        "Registro no confirmado", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
             }
         }
         catch (Exception ex)
         {
             _lblStatusText.Text = $"Error generando archivo: {ex.Message}";
             MessageBox.Show($"Error durante la generación del archivo:\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            _btnGenerar.Enabled = true;
+            _btnGenerar.Enabled = _pendingRecords.Count > 0 && _grmPersistenceKnown
+                && (!_hasSimulatedPending || _isAdmin);
         }
+    }
+
+    private void ConfirmGrmRows(HashSet<string> confirmed)
+    {
+        foreach (DataGridViewRow row in _gridExecution.Rows)
+        {
+            if (row.Tag is PendingRecordItem item && confirmed.Contains(item.Metadata.PrimaryKey))
+                row.Cells["_colEstado"].Value = "Cargado";
+        }
+        _pendingRecords.RemoveAll(item => confirmed.Contains(item.Metadata.PrimaryKey));
+        if (_pendingRecords.Count == 0)
+            _hasSimulatedPending = false;
+        _btnGenerar.Enabled = _pendingRecords.Count > 0 && _grmPersistenceKnown && !_hasSimulatedPending;
+        _lblStatusPending.Text = $"Pendientes: {_pendingRecords.Count}  |  Cargados: {_gridExecution.Rows.Count - _pendingRecords.Count}";
+    }
+
+    private static int TipoProceso(string area) =>
+        area.StartsWith("Recepc", StringComparison.OrdinalIgnoreCase) ? 1 :
+        area.StartsWith("Calidad", StringComparison.OrdinalIgnoreCase) ? 2 :
+        area.StartsWith("Producc", StringComparison.OrdinalIgnoreCase) ? 3 :
+        throw new InvalidOperationException($"Área de reporte no reconocida: {area}");
+
+    private static HashSet<string> GrmKeys(
+        IEnumerable<GrmRecepcionRecord> records, int tipoProceso, int reportId) =>
+        records.Select(record => GrmKey(record, tipoProceso, reportId))
+            .OfType<string>().ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    private static string? GrmKey(GrmRecepcionRecord record, int tipoProceso, int reportId)
+    {
+        if (string.IsNullOrWhiteSpace(record.Lote)) return null;
+        if (tipoProceso != 3) return record.Lote.Trim();
+        if (record.ReportId != reportId || string.IsNullOrWhiteSpace(record.CodigoPallet)
+            || record.Lote.Contains('|') || record.CodigoPallet.Contains('|')) return null;
+        return $"{record.Lote.Trim()}|{record.CodigoPallet.Trim()}";
+    }
+
+    private static bool TrySplitProductionKey(string? key, out string lote, out string pallet)
+    {
+        lote = pallet = string.Empty;
+        if (string.IsNullOrWhiteSpace(key)) return false;
+        var parts = key.Split('|', StringSplitOptions.TrimEntries);
+        if (parts.Length != 2 || string.IsNullOrWhiteSpace(parts[0])
+            || string.IsNullOrWhiteSpace(parts[1])) return false;
+        lote = parts[0];
+        pallet = parts[1];
+        return true;
     }
 
     private void OnGridExecutionCellFormatting(object? sender, DataGridViewCellFormattingEventArgs e)
@@ -765,7 +851,11 @@ public partial class MainForm : Form
 
             _txtOutputDir.Text = AppConfigService.GetOutputDirectory();
         }
-        catch { }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Error al cargar la administración desde GRM:\n{ex.Message}",
+                "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private void UpdateSelectedPipelineRulesGrid()

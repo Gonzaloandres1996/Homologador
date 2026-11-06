@@ -1,19 +1,19 @@
-using System.Text;
 using Homologador.AzureApi.Data;
+using Homologador.AzureApi.Security;
+using Homologador.AzureApi.Services;
 using Homologador.Core.Services;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
 
 namespace Homologador.AzureApi;
 
 public static class AzureApiHost
 {
     public const string DefaultBaseUrl = "http://localhost:5080";
-    public const string DefaultConfigDb = "Server=.\\SQLEXPRESS;Database=HomologatorConfig;Trusted_Connection=True;TrustServerCertificate=True;";
-    public const string DefaultAzureDb = "Server=.\\SQLEXPRESS;Database=HomologatorAzure;Trusted_Connection=True;TrustServerCertificate=True;";
+    public const string GrmAuthenticationBaseUrl = "https://apsv-prd-grm-authentication-ddd4faddfwdjdgbz.eastus2-01.azurewebsites.net/";
+    public const string GrmCalidadBaseUrl = "https://apsv-prd-grm-calidad-hde4brayaphcdca9.eastus2-01.azurewebsites.net/";
+    public const string DefaultAzureDb = "Server=localhost;Database=HomologatorAzure;Trusted_Connection=True;TrustServerCertificate=True;";
     public const string DefaultEncryptionKey = "/cv1xATwDdZyG+Hr8AE43a9dEHrw5KMC2Zsgobdyq0K0YoFUo/W3+J83MhoELZPr";
-    public const string DefaultJwtSecret = "uwfKkYR04O/12xU3TnpX26JhiO+mhj7maa5H7utyGt1SsYJU2N18FCFmeF+tMvEu8ot5JOmu4cMMWc81hYGhxg==";
 
     public static WebApplication Build(string[] args, string? urls = null)
     {
@@ -24,12 +24,6 @@ public static class AzureApiHost
             builder.WebHost.UseUrls(urls);
         }
 
-        var configConnStr = builder.Configuration.GetConnectionString("ConfigDb");
-        if (string.IsNullOrWhiteSpace(configConnStr) || configConnStr.Contains("Database=DataHomologator;", StringComparison.OrdinalIgnoreCase))
-        {
-            configConnStr = DefaultConfigDb;
-        }
-
         var azureConnStr = builder.Configuration.GetConnectionString("AzureDb");
         if (string.IsNullOrWhiteSpace(azureConnStr) || azureConnStr.Contains("Database=DataHomologator;", StringComparison.OrdinalIgnoreCase))
         {
@@ -37,35 +31,39 @@ public static class AzureApiHost
         }
 
         var encKey = builder.Configuration["Encryption:Key"] ?? DefaultEncryptionKey;
-        var jwtSecret = builder.Configuration["Jwt:Secret"] ?? DefaultJwtSecret;
-        var jwtIssuer = builder.Configuration["Jwt:Issuer"] ?? "Homologador.AzureApi";
-        var jwtAudience = builder.Configuration["Jwt:Audience"] ?? "Homologador.WinForms";
-
-        builder.Services.AddDbContext<ConfigDbContext>(opt => opt.UseSqlServer(configConnStr));
         builder.Services.AddDbContext<AzureDbContext>(opt => opt.UseSqlServer(azureConnStr));
         builder.Services.AddSingleton<IEncryptionService>(_ => new EncryptionService(encKey));
         builder.Services.AddSingleton<ISqlConnectionTester, SqlConnectionTester>();
         builder.Services.AddSingleton<IExternalQueryExecutor, ExternalQueryExecutor>();
         builder.Services.AddSingleton<ITransformationEngine, TransformationEngine>();
         builder.Services.AddSingleton<IFileGeneratorService, FileGeneratorService>();
+        builder.Services.AddHttpClient<GrmProfileAccess>(client =>
+        {
+            client.BaseAddress = new Uri(GrmAuthenticationBaseUrl);
+            client.Timeout = TimeSpan.FromSeconds(10);
+        }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            UseCookies = false
+        });
+        builder.Services.AddHttpClient<GrmRuleReader>(client =>
+        {
+            client.BaseAddress = new Uri(GrmCalidadBaseUrl);
+            client.Timeout = TimeSpan.FromSeconds(30);
+        }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            UseCookies = false
+        });
 
         builder.Services
-            .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-            .AddJwtBearer(opt =>
-            {
-                opt.TokenValidationParameters = new TokenValidationParameters
-                {
-                    ValidateIssuer = true,
-                    ValidateAudience = true,
-                    ValidateLifetime = true,
-                    ValidateIssuerSigningKey = true,
-                    ValidIssuer = jwtIssuer,
-                    ValidAudience = jwtAudience,
-                    IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret))
-                };
-            });
+            .AddAuthentication(GrmAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, GrmAuthenticationHandler>(
+                GrmAuthenticationHandler.SchemeName, _ => { });
 
-        builder.Services.AddAuthorization();
+        builder.Services.AddAuthorization(options =>
+            options.AddPolicy("HomologadorAdmin", policy =>
+                policy.RequireAssertion(_ => false)));
         builder.Services
             .AddControllers()
             .AddApplicationPart(typeof(AzureApiHost).Assembly);
@@ -77,42 +75,11 @@ public static class AzureApiHost
         app.MapGet("/api/health", () => Results.Ok(new
         {
             status = "Online",
-            configDb = "HomologatorConfig",
+            authentication = "GRM",
+            configDb = "GRM",
             azureDb = "HomologatorAzure"
         }));
 
         return app;
-    }
-
-    public static async Task EnsureDefaultUsersReadyAsync(IServiceProvider services)
-    {
-        using var scope = services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AzureDbContext>();
-
-        var users = await db.Users.ToListAsync();
-        bool changed = false;
-        foreach (var u in users)
-        {
-            bool valid = false;
-            try
-            {
-                valid = BCrypt.Net.BCrypt.Verify("admin123.", u.PasswordHash);
-            }
-            catch
-            {
-                valid = false;
-            }
-
-            if (!valid)
-            {
-                u.PasswordHash = BCrypt.Net.BCrypt.HashPassword("admin123.");
-                changed = true;
-            }
-        }
-
-        if (changed)
-        {
-            await db.SaveChangesAsync();
-        }
     }
 }

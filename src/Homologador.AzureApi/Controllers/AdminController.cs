@@ -1,6 +1,8 @@
 using Homologador.AzureApi.Data;
+using Homologador.AzureApi.Services;
 using Homologador.Core.DTOs;
 using Homologador.Core.Entities;
+using Homologador.Core.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -8,17 +10,17 @@ using Microsoft.EntityFrameworkCore;
 namespace Homologador.AzureApi.Controllers;
 
 [ApiController]
-[Authorize(Roles = "Admin")]
+[Authorize(Policy = "HomologadorAdmin")]
 [Route("api/admin")]
 public class AdminController : ControllerBase
 {
     private readonly AzureDbContext _azureDb;
-    private readonly ConfigDbContext _configDb;
+    private readonly GrmRuleReader _grmRules;
 
-    public AdminController(AzureDbContext azureDb, ConfigDbContext configDb)
+    public AdminController(AzureDbContext azureDb, GrmRuleReader grmRules)
     {
         _azureDb = azureDb;
-        _configDb = configDb;
+        _grmRules = grmRules;
     }
 
     [HttpGet("users")]
@@ -30,9 +32,16 @@ public class AdminController : ControllerBase
             .OrderBy(u => u.Id)
             .ToListAsync(ct);
 
-        var reports = await _configDb.Reports
-            .AsNoTracking()
-            .ToDictionaryAsync(r => r.Id, ct);
+        Dictionary<int, Report> reports;
+        try
+        {
+            reports = (await _grmRules.GetConfigurationV4Async(
+                Request.Headers.Authorization.ToString(), ct: ct)).Reports.ToDictionary(r => r.Id);
+        }
+        catch (GrmRuleFetchException ex)
+        {
+            return StatusCode(ex.StatusCode, new { message = ex.Message });
+        }
 
         var dtos = users.Select(u =>
         {
@@ -97,138 +106,81 @@ public class AdminController : ControllerBase
     [HttpGet("reports")]
     public async Task<ActionResult<IReadOnlyList<ReportSummaryDto>>> GetReports(CancellationToken ct)
     {
-        var reports = await _configDb.Reports
-            .AsNoTracking()
-            .Include(r => r.QueryDefinition)
-            .Include(r => r.MappingPipeline)
-                .ThenInclude(p => p.Rules)
-            .OrderBy(r => r.Id)
-            .ToListAsync(ct);
-
-        return Ok(reports.Select(r => new ReportSummaryDto(
-            r.Id,
-            r.Codigo,
-            r.Name,
-            r.Description,
-            r.TargetArea,
-            $"[{r.QueryDefinition.Codigo}] {r.QueryDefinition.Name}",
-            $"[{r.MappingPipeline.Codigo}] {r.MappingPipeline.Name}",
-            r.MappingPipeline.Rules.Count,
-            r.OutputFormat,
-            r.OutputSheetName,
-            r.OutputFilePattern
-        )).ToList());
+        try
+        {
+            return Ok(await _grmRules.GetReportSummariesV4Async(
+                Request.Headers.Authorization.ToString(), administrative: true, ct: ct));
+        }
+        catch (GrmRuleFetchException ex)
+        {
+            return StatusCode(ex.StatusCode, new { message = ex.Message });
+        }
     }
 
     [HttpGet("pipelines")]
     public async Task<ActionResult<IReadOnlyList<AdminPipelineDto>>> GetPipelines(CancellationToken ct)
     {
-        var pipelines = await _configDb.MappingPipelines
-            .AsNoTracking()
-            .Include(p => p.Rules)
-            .OrderBy(p => p.Id)
-            .ToListAsync(ct);
-
-        var dtos = pipelines.Select(p =>
+        var result = new List<AdminPipelineDto>();
+        foreach (var process in ReportProcessMap.All.OrderBy(p => p.MappingPipelineId))
         {
-            var rules = p.Rules.OrderBy(r => r.SortOrder).Select(r => new PipelineRuleDto(
-                r.Id,
-                r.SortOrder,
-                r.TargetColumn,
-                r.RuleType,
-                r.SourceColumn,
-                r.FixedValue,
-                r.LookupTableId,
-                r.LookupKeyColumn,
-                r.LookupValueColumn,
-                r.DateFormat,
-                r.Validation,
-                r.IsRequired,
-                r.IsIdentity,
-                r.SubstringStart,
-                r.SubstringLength
-            )).ToList();
-
-            return new AdminPipelineDto(
-                p.Id,
-                p.Codigo,
-                p.Name,
-                p.Description,
-                p.IsActive,
-                rules.Count,
-                rules
-            );
-        }).ToList();
-
-        return Ok(dtos);
+            IReadOnlyList<PipelineRuleDto> rules;
+            try
+            {
+                rules = await _grmRules.GetRulesAsync(process.ReportId,
+                    HttpContext.Request.Headers.Authorization.ToString(), ct);
+            }
+            catch (GrmRuleFetchException ex)
+            {
+                return StatusCode(ex.StatusCode, new { message = ex.Message });
+            }
+            result.Add(new AdminPipelineDto(
+                process.MappingPipelineId, process.Codigo, process.Name,
+                process.Description, true, rules.Count, rules));
+        }
+        return Ok(result);
     }
 
     [HttpGet("lookups")]
     public async Task<ActionResult<IReadOnlyList<LookupTableDto>>> GetLookups(CancellationToken ct)
     {
-        var tables = await _configDb.LookupTables
-            .AsNoTracking()
-            .Include(t => t.Entries)
-            .OrderBy(t => t.Id)
-            .ToListAsync(ct);
-
-        return Ok(tables.Select(t => new LookupTableDto(
-            t.Id,
-            t.Codigo,
-            t.Name,
-            t.Description,
-            t.Entries.OrderBy(e => e.Id).Select(e => new LookupEntryDto(e.Id, e.KeyValue, e.MappedValue, e.ExtraField1)).ToList()
-        )).ToList());
+        try
+        {
+            return Ok(await _grmRules.GetLookupsAsync(Request.Headers.Authorization.ToString(), ct));
+        }
+        catch (GrmRuleFetchException ex)
+        {
+            return StatusCode(ex.StatusCode, new { message = ex.Message });
+        }
     }
 
     [HttpGet("datasources")]
     public async Task<ActionResult<IReadOnlyList<AdminDataSourceDto>>> GetDataSources(CancellationToken ct)
     {
-        var list = await _configDb.DataSources.AsNoTracking().OrderBy(d => d.Id).ToListAsync(ct);
-        return Ok(list.Select(d => new AdminDataSourceDto(
-            d.Id,
-            d.Codigo,
-            d.Name,
-            d.Server,
-            d.Database,
-            d.AuthType == 1 ? "SQL Authentication" : "Windows Integrated",
-            d.ConnectionTimeout,
-            d.IsActive
-        )).ToList());
+        try
+        {
+            var configuration = await _grmRules.GetConfigurationV4Async(
+                Request.Headers.Authorization.ToString(), ct: ct);
+            return Ok(GrmConfigurationMapper.ToAdminDataSources(configuration));
+        }
+        catch (GrmRuleFetchException ex)
+        {
+            return StatusCode(ex.StatusCode, new { message = ex.Message });
+        }
     }
 
     [HttpGet("queries")]
     public async Task<ActionResult<IReadOnlyList<AdminQueryDto>>> GetQueries(CancellationToken ct)
     {
-        var list = await _configDb.QueryDefinitions
-            .AsNoTracking()
-            .Include(q => q.DataSource)
-            .Include(q => q.Parameters)
-            .OrderBy(q => q.Id)
-            .ToListAsync(ct);
-
-        return Ok(list.Select(q =>
+        try
         {
-            var prms = q.Parameters.OrderBy(p => p.SortOrder).Select(p => new QueryParamDto(
-                p.Id,
-                p.SortOrder,
-                p.Name,
-                p.SqlType,
-                p.DefaultValue,
-                p.Description
-            )).ToList();
-
-            return new AdminQueryDto(
-                q.Id,
-                q.Codigo,
-                q.Name,
-                q.DataSource.Codigo,
-                q.DataSource.Name,
-                q.CommandType == 1 ? "StoredProcedure" : "View / SELECT",
-                q.CommandText,
-                prms.Count,
-                prms
-            );
-        }).ToList());
+            var configuration = await _grmRules.GetConfigurationV4Async(
+                Request.Headers.Authorization.ToString(), ct: ct);
+            return Ok(GrmConfigurationMapper.ToAdminQueries(configuration));
+        }
+        catch (GrmRuleFetchException ex)
+        {
+            return StatusCode(ex.StatusCode, new { message = ex.Message });
+        }
     }
+
 }

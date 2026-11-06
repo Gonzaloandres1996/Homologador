@@ -1,229 +1,200 @@
 # Homologador de Cargas Masivas DDC (DataHomologator)
 
-Sistema de extracción, transformación y homologación de datos operativos desde packings externos hacia formatos estándar de carga masiva para SAP (Recepción de Materia Prima, Calidad y Producción).
+Sistema de extracción, transformación y homologación de datos operativos desde packings externos hacia formatos estándar de carga masiva para SAP (Recepción de Materia Prima, Calidad y Producción), integrado con los servicios corporativos de **GRM en Azure**.
 
 ---
 
 ## 1. Descripción y Alcance del Proyecto
 
-El **Homologador DDC** resuelve la interoperabilidad entre los sistemas informáticos heterogéneos de los packings agrícolas externos (SQL Server locales) y el ERP corporativo SAP. 
+El **Homologador DDC** resuelve la interoperabilidad entre los sistemas informáticos heterogéneos de los packings agrícolas externos (SQL Server en planta/DAIA) y el ERP corporativo SAP.
 
 ### Alcance Operativo
-El sistema opera sobre **3 reportes oficiales certificados** para la operación de Packing externos:
-1. **Calidad Packing externos**: Homologación de análisis de calidad, tolerancias, defectos y parámetros fitosanitarios (80 reglas de mapeo).
-2. **Carga Masiva SAP Recepción MP**: Homologación de recepción de fruta, productores, variedades, guías y pesajes (23 reglas de mapeo).
-3. **Producción Packing externos**: Homologación de procesos de embalaje, rendimientos, calibres y tarjas/pallets (19 reglas de mapeo).
+El sistema opera sobre **3 reportes oficiales certificados** para la operación de packings externos:
+1. **Calidad Andinexia** (`ReportId = 1`, `TipoProceso = 2`, `Pipeline = 1`): Homologación de análisis de calidad, tolerancias, defectos y parámetros fitosanitarios.
+2. **Recepciones 26-10** (`ReportId = 2`, `TipoProceso = 1`, `Pipeline = 3`): Homologación de recepción de fruta, productores, variedades, guías y pesajes hacia formato SAP.
+3. **Pipeline SAP Producción** (`ReportId = 3`, `TipoProceso = 3`, `Pipeline = 2`): Homologación de procesos de embalaje, rendimientos, calibres y tarjas/pallets hacia formato SAP.
 
 ### Principios de Diseño
-* **Cero almacenamiento redundante**: No se almacenan copias temporales ni archivos JSON con datos del packing en la nube. La fuente de verdad operativa es la base de datos del packing y el respaldo físico es el archivo Excel/CSV generado.
-* **Desacople de red**: La API de Azure nunca se conecta a las redes de los packings externos. La estación de trabajo local (con VPN activa) es la encargada de ejecutar la consulta de solo lectura mediante ADO.NET directo.
-* **Determinismo e idempotencia**: El sistema rastrea de forma liviana únicamente qué identificadores ya fueron generados con estado `Cargado`, evitando duplicaciones en ejecuciones posteriores.
-* **Topología resiliente**: Si la API remota en Azure no está accesible, la aplicación de escritorio levanta en el mismo proceso una instancia local de la API (`AzureApiHost`) mediante Kestrel.
+* **Gobierno centralizado en GRM (V1–V4)**: La autenticación, los permisos por área, las tablas de equivalencias, las reglas de mapeo, la configuración de consultas/orígenes de datos y el registro histórico de lotes generados residen de forma centralizada en las APIs corporativas de GRM en Azure (`GRM.Authentication.Api` y `GRM.Calidad.Api`), eliminando la necesidad de instalar o mantener bases SQL Server locales (`HomologatorConfig`) en las estaciones de trabajo.
+* **Cero almacenamiento redundante de payloads**: No se almacenan copias temporales ni archivos JSON con datos crudos del packing en la nube. La fuente de verdad operativa es la base de datos de origen (DAIA) y el respaldo físico es el archivo Excel/CSV generado.
+* **Desacople de red hacia DAIA**: Las APIs en Azure nunca abren conexión directa hacia las redes internas de los packings externos. La estación de trabajo del operador (con VPN/red corporativa activa) descifra en memoria las credenciales recibidas desde GRM V4 mediante AES-256 (`EncryptionService`) y ejecuta la consulta de solo lectura mediante ADO.NET directo.
+* **Determinismo e idempotencia**: El sistema rastrea en GRM (`api/conversor/persistencias`) únicamente qué identificadores (`Lote` o `Lote|CodigoPallet`) ya fueron generados con estado `Cargado`, evitando duplicaciones en ejecuciones posteriores.
+* **API local integrada**: Al iniciar, la aplicación de escritorio levanta en el mismo proceso una instancia local de `Homologador.AzureApi` (`http://localhost:5080`) mediante Kestrel si no detecta otra instancia activa.
 
 ---
 
 ## 2. Arquitectura de la Solución
 
-La solución se divide en tres capas independientes dentro de `Homologador.sln` (.NET 10):
+La solución se organiza en cuatro proyectos dentro de `Homologador.sln` (.NET 10):
 
 ```mermaid
 flowchart TD
     subgraph UI ["Homologador.WinForms (Presentación Desktop)"]
         direction TB
         MainForm["MainForm (Menú, Grilla y Ejecución)"]
-        LoginForm["LoginForm (Autenticación)"]
+        LoginForm["LoginForm (Autenticación Corporativa)"]
+        TokenMgr["GrmTokenManager (Ciclo de vida JWT GRM)"]
         ApiClient["HomologadorApiClient (Consumo HTTP)"]
         DdcTheme["DdcTheme (Diseño corporativo DDC)"]
     end
 
-    subgraph Core ["Homologador.Core (Dominio y Motores ETL)"]
+    subgraph Core ["Homologador.Core (Dominio, Mappers GRM y Motores ETL)"]
         direction TB
         TransEngine["TransformationEngine (Mapeos en memoria)"]
-        QueryExec["ExternalQueryExecutor (ADO.NET Packing)"]
+        QueryExec["ExternalQueryExecutor (ADO.NET DAIA)"]
         FileGen["FileGeneratorService (ClosedXML / CSV)"]
         IdExtractor["RowIdentityExtractor (Identidad dinámica)"]
         Crypto["EncryptionService (AES-256)"]
-        Entities["Entities & DTOs"]
+        GrmMappers["GrmConfigurationMapper (V4)\nGrmRuleMapper (V3)\nGrmEquivalenceMapper (V2)\nReportProcessMap"]
     end
 
-    subgraph API ["Homologador.AzureApi (Backend y Persistencia)"]
+    subgraph API ["Homologador.AzureApi (Host Local Integrado :5080)"]
         direction TB
-        Host["AzureApiHost (Kestrel Standalone / Embedded)"]
+        Host["AzureApiHost (Kestrel Embedded)"]
+        AuthHandler["GrmAuthenticationHandler + GrmProfileAccess"]
+        RuleReader["GrmRuleReader (Cliente HTTP GRM V2/V3/V4)"]
         Controllers["Controllers (Auth, Reports, Records, Admin)"]
-        ConfigDb["ConfigDbContext (EF Core)"]
-        AzureDb["AzureDbContext (EF Core)"]
     end
 
-    subgraph Externo ["Orígenes de Datos Externos"]
-        PackDB[("SQL Server Packing (Read-Only)")]
-        ConfDB[("HomologatorConfig (Configuración y Pipelines)")]
-        AzDB[("HomologatorAzure (Usuarios y Persistencia)")]
+    subgraph Externo ["Servicios Corporativos y Orígenes de Datos"]
+        GrmAuth["GRM.Authentication.Api\n(/api/authentication/login, /api/user/profile)"]
+        GrmCalidad["GRM.Calidad.Api\n(/persistencias, /equivalencias, /reglas, /configuracion)"]
+        PackDB[("SQL Server DAIA / Packing (Read-Only vía VPN)")]
     end
 
     MainForm --> ApiClient
+    ApiClient --> TokenMgr
+    TokenMgr -->|"1. Login y Renovación JWT"| GrmAuth
+    ApiClient -->|"2. Persistencias (V1) y Equivalencias (V2)"| GrmCalidad
+    ApiClient -->|"3. Sesión (/api/auth/me) y Contexto (/api/reports/*)"| Controllers
+    Controllers --> AuthHandler
+    AuthHandler -->|"Valida perfil y roles"| GrmAuth
+    Controllers --> RuleReader
+    RuleReader -->|"Consulta Reglas (V3) y Configuración (V4)"| GrmCalidad
+    RuleReader --> GrmMappers
+    RuleReader --> Crypto
     MainForm --> TransEngine
     MainForm --> QueryExec
     MainForm --> FileGen
     MainForm --> IdExtractor
-    ApiClient -->|"HTTPS REST + JWT"| Controllers
-    Controllers --> ConfigDb
-    Controllers --> AzureDb
-    ConfigDb --> ConfDB
-    AzureDb --> AzDB
-    QueryExec -->|"ADO.NET TCP 1433 (VPN)"| PackDB
+    QueryExec -->|"4. ADO.NET TCP 1433 (VPN)"| PackDB
 ```
 
 ### Proyectos
 
-* **`Homologador.WinForms`**: Aplicación de escritorio nativa en Windows Forms (.NET 10). Maneja la sesión del operador, renderizado de tarjetas de reportes asignados, grilla de resultados con diferenciación de estados (`Pendiente` / `Cargado`), configuración de carpetas de descarga y panel de administración para perfiles de TI.
-* **`Homologador.Core`**: Librería de lógica pura sin dependencias de UI ni Web. Aloja los contratos DTO, las entidades de datos, el motor de transformación en memoria, la generación de archivos Excel/CSV y el extractor de identidad de lotes.
-* **`Homologador.AzureApi`**: Servicio ASP.NET Core que expone endpoints REST securizados con JWT. Administra usuarios, catálogo de fuentes de datos cifradas, consultas SQL, tablas de lookups, pipelines de reglas y la persistencia de auditoría/lotes generados.
+* **`Homologador.WinForms`**: Aplicación de escritorio en Windows Forms (.NET 10) con actualización automática vía Velopack. Gestiona el inicio de sesión corporativo con GRM, el renderizado de reportes autorizados según el perfil del usuario, la grilla de resultados (`Pendiente` / `Cargado`) y la exportación de archivos.
+* **`Homologador.Core`**: Librería de dominio y motores ETL sin dependencias de UI ni Web. Contiene las entidades, contratos DTO, los mappers de integración GRM (`GrmConfigurationMapper`, `GrmRuleMapper`, `GrmEquivalenceMapper`, `ReportProcessMap`), el motor de transformación en memoria, el servicio de cifrado AES-256, la generación de archivos Excel/CSV y el extractor de identidad de filas.
+* **`Homologador.AzureApi`**: Host ASP.NET Core embebido en el puerto local `5080`. Valida tokens y perfiles contra `GRM.Authentication.Api`, orquesta la lectura de configuración V4 y reglas V3 desde `GRM.Calidad.Api`, descifra credenciales de orígenes de datos con `EncryptionService` y expone los contratos REST consumidos por el cliente WinForms.
+* **`Homologador.Security.Checks`**: Suite ejecutable de 90 pruebas automatizadas (`Program.cs` y `V4Checks.cs`) que verifica de extremo a extremo la seguridad de tokens, permisos por área, persistencias (V1), equivalencias (V2), reglas (V3) y configuración sin base SQL local (V4).
 
 ---
 
-## 3. Base de Datos y Modelo Relacional
+## 3. Integración con Servicios Corporativos GRM (Fases V1 a V4)
 
-El sistema desacopla el almacenamiento en dos bases de datos relacionales independientes: **`HomologatorConfig`** (8 tablas para orígenes, consultas y pipelines de transformación) y **`HomologatorAzure`** (5 tablas para usuarios y persistencia de registros generados). Diseñado sin identificadores GUID, utilizando `INT IDENTITY(1,1)` y claves foráneas lógicas entre contextos.
+La arquitectura reemplaza las antiguas bases SQL Server locales (`HomologatorConfig` y el uso operativo de `HomologatorAzure`) por cuatro contratos sobre las APIs corporativas de GRM en Azure:
 
-```mermaid
-erDiagram
-    Users ||--o{ UserReports : "asigna"
-    Reports ||--o{ UserReports : "autoriza"
-    DataSources ||--o{ QueryDefinitions : "contiene"
-    QueryDefinitions ||--o{ QueryParameters : "define"
-    QueryDefinitions ||--o{ Reports : "alimenta"
-    MappingPipelines ||--o{ MappingRules : "compone"
-    MappingPipelines ||--o{ Reports : "transforma"
-    LookupTables ||--o{ LookupEntries : "contiene"
-    LookupTables ||--o{ MappingRules : "resuelve"
-    Reports ||--o{ RegistrosRecepcion : "persiste"
-    Reports ||--o{ RegistrosCalidad : "persiste"
-    Reports ||--o{ RegistrosProduccion : "persiste"
+| Fase | Componente / Endpoint GRM | Responsabilidad Funcional | Clases Responsables |
+| :--- | :--- | :--- | :--- |
+| **V1 (Autenticación y Persistencias)** | `GRM.Authentication.Api` (`/api/authentication/login`, `/api/user/profile`) y `GRM.Calidad.Api` (`GET/POST /api/conversor/persistencias?tipoProceso=1\|2\|3`) | Inicio de sesión con credenciales corporativas, autorización por roles (`Conversor_Recepcion`, `Conversor_Calidad`, `Conversor_Produccion`) y lectura/registro de lotes generados por proceso. | `GrmTokenManager`, `GrmAuthenticationHandler`, `GrmProfileAccess`, `HomologadorApiClient` |
+| **V2 (Equivalencias / Lookups)** | `GRM.Calidad.Api` (`GET /api/conversor/equivalencias`) | Obtención dinámica de las tablas de homologación (`idParametro`: `2=Especies`, `3=Esponjas`, `4=Polvo Tierra`, `5=Tratamiento`). | `GrmEquivalenceMapper`, `HomologadorApiClient`, `GrmRuleReader` |
+| **V3 (Reglas de Transformación)** | `GRM.Calidad.Api` (`GET /api/conversor/reglas?tipoProceso=1\|2\|3`) | Obtención ordenada de las reglas de mapeo (`Valor1` a `Valor14`) para cada reporte y pipeline sin límites fijos de cantidad de reglas. | `GrmRuleMapper`, `ReportProcessMap`, `GrmRuleReader` |
+| **V4 (Configuración y Orígenes DAIA)** | `GRM.Calidad.Api` (`GET /api/conversor/configuracion[?tipoProceso=1\|2\|3]`) | Reconstrucción en memoria de `Reports`, `QueryDefinitions`, `QueryParameters` y `DataSources` (`idAplicacion = 2`), validando integridad referencial y descifrando localmente las credenciales de conexión a DAIA con `EncryptionService`. | `GrmConfigurationContracts`, `GrmConfigurationMapper`, `GrmRuleReader`, `ReportsController` |
 
-
-```
-
-### Estructura por Bloques Funcionales
-
-#### Bloque 1: Seguridad y Control de Acceso
-* **`dbo.Users`**: Usuarios del sistema. Absorbe roles y perfiles mediante restricciones `CHECK (Rol IN ('Admin', 'Operator'))` y `CHECK (Perfil IN ('Recepción', 'Calidad', 'Producción'))`. Las contraseñas se almacenan con hash BCrypt administradas por TI.
-* **`dbo.UserReports`**: Tabla de asignación muchos a muchos entre usuarios y los reportes que tienen autorizados para visualizar y ejecutar.
-
-#### Bloque 2: Configuración de Extracción, Lookups y Pipelines ETL
-* **`dbo.DataSources`**: Registro de conexiones SQL a packings externos. Almacena servidor, base de datos y credenciales cifradas con AES-256 (`UsernameEncrypted`, `PasswordEncrypted`).
-* **`dbo.QueryDefinitions`**: Consultas SQL de extracción parametrizadas (vistas o stored procedures) a ejecutar contra el packing.
-* **`dbo.QueryParameters`**: Parámetros tipados asociados a cada consulta SQL.
-* **`dbo.LookupTables`**: Catálogo cabecera de tablas de equivalencia (mapeo de valores locales del packing a códigos SAP).
-* **`dbo.LookupEntries`**: Pares clave/valor de equivalencia (`KeyValue` $\rightarrow$ `MappedValue`).
-* **`dbo.MappingPipelines`**: Definición cabecera de los pipelines de transformación hacia SAP.
-* **`dbo.MappingRules`**: Reglas atómicas de transformación aplicadas por columna:
-  * `RuleType`: Direct, Fixed, Lookup/Homologation, DateFormat, Substring/Formatted, Computed/Conditional, Concat, Aggregate, Empty.
-  * `IsIdentity`: Flag booleano que define si la columna forma parte de la clave única de deduplicación.
-* **`dbo.Reports`**: Entidad integradora que asocia una consulta SQL, un pipeline de reglas, el área de negocio (`Recepción`, `Calidad`, `Producción`) y los patrones de salida de archivo.
-
-#### Bloque 3: Persistencia de Registros Generados y Auditoría
-* **`dbo.RegistrosRecepcion`**: Tabla con clave primaria `Lote` (PK natural). Almacena lotes generados con fecha, productor, kilos y estado (`Cargado`).
-* **`dbo.RegistrosCalidad`**: Tabla con clave primaria `Lote` (PK natural independiente, desacoplada físicamente de Recepción para evitar bloqueos cruzados en planta).
-* **`dbo.RegistrosProduccion`**: Tabla con clave primaria compuesta `(ReportId, LoteProceso, CodigoPallet)`. Permite que un mismo lote de proceso (`AN051xxxxx`) registre múltiples líneas notificadas (pallets/tarjas) sin colisión.
-
+### Notas sobre Seguridad y Gobierno Administrativo
+* **Descifrado local de credenciales DAIA**: GRM almacena y transmite las credenciales de `DataSources` cifradas (`CfgUsernameEncrypted`, `CfgPasswordEncrypted`). El descifrado ocurre exclusivamente en memoria dentro de la estación de trabajo mediante la clave AES configurada en `appsettings.json` (`Encryption:Key`), sin exponer textos cifrados ni claves en mensajes de error o diagnósticos.
+* **Sin fallback silencioso a SQL local**: Ante cualquier fallo de red, timeout o incoherencia en los datos devueltos por GRM, la API local rechaza la operación con códigos HTTP explícitos (`401`, `403`, `502`, `503`) sin recurrir a bases de datos locales.
+* **Rutas heredadas bloqueadas**: La política `HomologadorAdmin` se encuentra deshabilitada por diseño (`RequireAssertion(_ => false)`) y las rutas locales de persistencia en `RecordsController` responden `HTTP 410 Gone`, dado que toda la administración y persistencia se gobierna desde GRM.
 
 ---
 
 ## 4. Flujo del Sistema de Punta a Punta
 
-El ciclo de vida completo desde la interacción del operador hasta la persistencia final sigue el siguiente flujo determinista:
-
 ```mermaid
 sequenceDiagram
     autonumber
     actor Op as Operador (WinForms)
-    participant UI as MainForm
-    participant API as AzureApi (Controllers)
-    participant DB_DDC as Base de Datos Azure / Migración
+    participant UI as MainForm / HomologadorApiClient
+    participant API as AzureApi Local (:5080)
+    participant GRM_Auth as GRM.Authentication.Api
+    participant GRM_Cal as GRM.Calidad.Api (V1-V4)
     participant Engine as TransformationEngine / Extractor
-    participant DB_Ext as SQL Server Packing Externo
+    participant DAIA as SQL Server DAIA (VPN)
     participant FS as Sistema de Archivos Local
 
-    Op->>UI: Inicia sesión (Email + Contraseña)
-    UI->>API: POST /api/auth/login
-    API->>DB_DDC: Valida credenciales y rol
-    API-->>UI: JWT + Datos de sesión
-    
+    Op->>UI: Ingresa usuario y contraseña corporativa
+    UI->>GRM_Auth: POST /api/authentication/login
+    GRM_Auth-->>UI: Bearer JWT + ExpiresIn
+    UI->>API: GET /api/auth/me (Bearer JWT)
+    API->>GRM_Auth: GET /api/user/profile
+    GRM_Auth-->>API: Datos de usuario y roles (Conversor_*)
+    API-->>UI: UserSessionDto con áreas habilitadas
+
     UI->>API: GET /api/reports/my-reports
-    API->>DB_DDC: Consulta reportes autorizados en UserReports
+    API->>GRM_Cal: GET /api/conversor/configuracion (V4) + /reglas (V3)
+    GRM_Cal-->>API: Reportes activos autorizados y conteo de reglas
     API-->>UI: Listado de tarjetas de reportes
-    
-    Op->>UI: Selecciona reporte (ej: "Producción Packing externos")
+
+    Op->>UI: Selecciona reporte (ej: Recepción / Calidad / Producción)
     UI->>API: GET /api/reports/{id}/execution-context
-    API->>DB_DDC: Obtiene Query, Reglas, Lookups y claves ya generadas (AlreadyGeneratedKeys)
-    API-->>UI: Contexto de ejecución completo
-    UI->>API: GET /api/records/by-report/{id}
-    API-->>UI: Historial de registros ya guardados en persistencia
-    UI->>Op: Renderiza grilla con registros previos en estado "Cargado"
+    API->>GRM_Cal: GET /api/conversor/configuracion?tipoProceso={p} (V4)
+    API->>GRM_Cal: GET /api/conversor/reglas?tipoProceso={p} (V3)
+    Note over API: Valida integridad V4 y descifra credenciales DAIA con AES-256
+    API-->>UI: ExecutionContextDto (Reporte, DataSource, Query, Parámetros, Reglas V3)
+    UI->>GRM_Cal: GET /api/conversor/equivalencias (V2)
+    GRM_Cal-->>UI: Tablas de equivalencia anexadas al contexto
+    UI->>GRM_Cal: GET /api/conversor/persistencias?tipoProceso={p} (V1)
+    GRM_Cal-->>UI: Historial de registros ya generados ("Cargado")
 
     Op->>UI: Pulsa "Actualizar / Cargar"
-    UI->>DB_Ext: ExternalQueryExecutor ejecuta consulta directa en el packing (vía VPN)
-    DB_Ext-->>UI: Filas crudas extraídas
-    
+    UI->>DAIA: ExternalQueryExecutor ejecuta SP / consulta de solo lectura (vía VPN)
+    DAIA-->>UI: Filas crudas extraídas
     UI->>Engine: TransformationEngine.Transform(rules, lookups, rawRows)
-    Note over Engine: Aplica formateos, tablas de lookup con fallback,<br/>nomenclaturas, rellenos de ceros y filtros de exclusión
-    Engine-->>UI: Filas transformadas en memoria
-    
+    Engine-->>UI: Filas homologadas en memoria
     UI->>Engine: RowIdentityExtractor.ExtractRowMetadata()
-    Note over Engine: Resuelve la clave única mediante reglas con IsIdentity = 1<br/>(ej: "LoteProceso|CodigoPallet" en Producción)
-    Engine-->>UI: Identificadores únicos de fila
-    
-    Note over UI: Deduplicación en Memoria:<br/>Descarta filas cuya clave única ya esté en AlreadyGeneratedKeys
-    UI->>Op: Muestra nuevos registros arriba de la grilla en estado "Pendiente" (color Naranja)
+    Engine-->>UI: Claves únicas por fila (Lote o Lote|CodigoPallet)
+    Note over UI: Filtra claves ya presentes en GRM y marca las nuevas como "Pendiente"
 
     Op->>UI: Pulsa "Generar Archivo"
     UI->>Engine: FileGeneratorService.GenerateFile(columnas, filas, formato)
-    Engine-->>UI: Arreglo de bytes del archivo Excel (.xlsx) o CSV
-    UI->>FS: Guarda archivo en la carpeta configurada (Descargas)
-
-    alt Modo Operador
-        UI->>API: POST /api/records/mark-generated (Lotes y metadatos)
-        API->>DB_DDC: Inserta en RegistrosRecepcion / Calidad / Produccion y escribe ExecutionLogs
-        API-->>UI: Confirmación de inserción exitosa
-        UI->>Op: Actualiza estado en grilla de "Pendiente" a "Cargado" (color Verde)
-    else Modo Administrador (Prueba)
-        Note over UI: Genera el archivo físico de prueba<br/>sin alterar la base de datos ni cambiar estados
-        UI->>Op: Notifica éxito en modo prueba
-    end
+    Engine-->>UI: Archivo Excel (.xlsx) o CSV
+    UI->>FS: Guarda archivo en carpeta de salida configurada
+    UI->>GRM_Cal: POST /api/conversor/persistencias (tipoProceso, registros)
+    GRM_Cal-->>UI: Confirmación de lotes registrados
+    UI->>Op: Actualiza filas confirmadas de "Pendiente" a "Cargado"
 ```
-
-### Detalle de las Etapas
-
-1. **Extracción**: [`ExternalQueryExecutor`](src/Homologador.Core/Services/ExternalQueryExecutor.cs) abre una conexión de solo lectura (`SqlConnection`) hacia la IP/Servidor del packing externo utilizando credenciales desencriptadas al vuelo y ejecuta la consulta configurada.
-2. **Transformación**: [`TransformationEngine`](src/Homologador.Core/Services/TransformationEngine.cs) procesa el conjunto de filas en memoria. Resuelve equivalencias contra diccionarios indexados `O(1)`. Si una equivalencia no se encuentra, emite una advertencia de auditoría y aplica **Fallback** manteniendo el dato original para evitar pérdida de trazabilidad.
-3. **Identidad Dinámica**: [`RowIdentityExtractor`](src/Homologador.Core/Services/RowIdentityExtractor.cs) inspecciona las reglas del pipeline que tengan `IsIdentity = 1`. En Producción, combina de forma dinámica el lote de proceso con el código de tarja/pallet (`LOTEPROCESO|CODIGO PALLET`), permitiendo que coexistan múltiples registros para un mismo lote sin código en duro.
-4. **Deduplicación**: Se contrasta cada clave contra el conjunto de claves ya exportadas (`AlreadyGeneratedKeys`). Solo las filas genuinamente nuevas se presentan al operador como `Pendiente`.
-5. **Generación Físico**: [`FileGeneratorService`](src/Homologador.Core/Services/FileGeneratorService.cs) serializa las filas aprobadas a OpenXML nativo (`.xlsx`) mediante ClosedXML o texto delimitado (`.csv`) según el formato del reporte.
-6. **Persistencia y Cierre**: Al confirmar la exportación, la API guarda los registros en su respectiva tabla relacional (`RegistrosRecepcion`, `RegistrosCalidad` o `RegistrosProduccion`) y genera la entrada correspondiente en `ExecutionLogs`.
 
 ---
 
-## 5. Requisitos y Puesta en Marcha
+## 5. Requisitos, Ejecución y Pruebas
 
 ### Prerrequisitos
-* **.NET 10 SDK** (Runtime Windows Desktop).
-* **Microsoft SQL Server** (Local `.\SQLEXPRESS` o Azure SQL Database).
-* Acceso de red / VPN a las bases de datos de los packings externos.
+* **Windows x64** compatible con **.NET 10** y **.NET 10 SDK**.
+* **Conectividad HTTPS** hacia los servicios corporativos de GRM en Azure.
+* **Conectividad de red / VPN** hacia el servidor SQL Server de origen (**DAIA**) con los mismos permisos de red del entorno operativo.
+* **No se requiere SQL Server local**: No es necesario instalar SQL Server Express ni restaurar las bases `HomologatorConfig` o `HomologatorAzure` para operar la aplicación.
+* **Preservación de `appsettings.json`**: No modificar ni eliminar `Encryption:Key` en `src/Homologador.AzureApi/appsettings.json`, ya que se utiliza para descifrar las credenciales de `DataSources` entregadas por GRM V4.
 
-### Inicialización de la Base de Datos
-1. Abrir SQL Server Management Studio (SSMS).
-2. Ejecutar el script [`02_Crear_BD_Simplificada_SSMS.sql`](02_Crear_BD_Simplificada_SSMS.sql).
-   * Crea la base de datos `DataHomologator_Migracion`.
-   * Inicializa las 14 tablas relacionales.
-   * Migra y parametriza los 3 reportes oficiales, sus 3 pipelines y las 122 reglas activas.
-   * Crea los usuarios por defecto con contraseña administrativa (`admin123.`).
+### Compilación y Ejecución
+Abrir PowerShell en la raíz del repositorio y ejecutar:
 
-### Ejecución
-Compilar y ejecutar la solución:
 ```powershell
-# Compilación
-dotnet build Homologador.sln
+dotnet restore
+dotnet build Homologador.sln -c Release
+dotnet run --project src\Homologador.WinForms\Homologador.WinForms.csproj
+```
 
-# Ejecución de la aplicación de escritorio
-dotnet run --project src/Homologador.WinForms/Homologador.WinForms.csproj
+> **Nota operativa:** El comando anterior inicia la interfaz WinForms y levanta automáticamente la API local integrada en `http://localhost:5080`. No iniciar `Homologador.AzureApi` por separado y verificar que no exista una instancia previa ocupando el puerto `5080`.
+
+### Ejecución de la Suite de Pruebas Automatizadas (90 Checks)
+Para validar la seguridad, autenticación, persistencias (V1), equivalencias (V2), reglas (V3) y configuración (V4) sin afectar datos de producción en GRM ni consultar DAIA:
+
+```powershell
+dotnet run --project tests\Homologador.Security.Checks\Homologador.Security.Checks.csproj -c Release
+```
+
+### Publicación de Nuevas Versiones (Velopack + GitHub Releases)
+El sistema cuenta con actualización automática mediante **Velopack** apuntando a los *GitHub Releases* del repositorio oficial. Para generar y publicar una nueva versión hacia los operadores, actualizar `<Version>` en los `.csproj`, fusionar a `main` y ejecutar:
+
+```powershell
+.\publicar_release.ps1 -Version "1.2.0" -GitHubToken "<TU_TOKEN_GITHUB>"
 ```
