@@ -41,9 +41,11 @@ public sealed class HomologadorApiClient : IDisposable
             using var body = await JsonDocument.ParseAsync(
                 await response.Content.ReadAsStreamAsync(cts.Token), cancellationToken: cts.Token);
             if (!body.RootElement.TryGetProperty("authentication", out var authentication)
-                || authentication.GetString() != "GRM")
+                || authentication.GetString() != "GRM"
+                || !body.RootElement.TryGetProperty("configDb", out var configDb)
+                || configDb.GetString() != "GRM")
                 throw new InvalidOperationException(
-                    "Hay una API antigua en el puerto 5080. Ciérrela antes de iniciar el Homologador.");
+                    "Hay una API antigua en el puerto 5080. Ciérrela antes de iniciar el Homologador actual con configuración GRM V4.");
             return true;
         }
         catch (HttpRequestException)

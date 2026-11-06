@@ -13,6 +13,8 @@ using Homologador.WinForms.ApiClient;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Http;
+using Microsoft.Extensions.Options;
 
 internal static class V4Checks
 {
@@ -429,6 +431,100 @@ internal static class V4Checks
             Assert(new TransformationEngine().Transform(loaded.Rules, loaded.Lookups, []).Rows.Count == 0);
             Assert(h.Paths.SequenceEqual(["/api/conversor/configuracion?tipoProceso=1",
                 "/api/conversor/reglas?tipoProceso=1", "/api/conversor/equivalencias"]));
+        });
+        foreach (var mode in new[] { "current", "old-config", "missing-config", "old-auth", "offline" })
+            await Check($"startup health {mode} never reuses a local database configuration API", async () =>
+            {
+                var handler = new MockHandler(_ => mode == "offline"
+                    ? throw new HttpRequestException("Controlled unavailable local API")
+                    : new(HttpStatusCode.OK)
+                    {
+                        Content = mode == "missing-config"
+                            ? JsonContent.Create(new { authentication = "GRM" })
+                            : JsonContent.Create(new { authentication = mode == "old-auth" ? "Local" : "GRM",
+                                configDb = mode == "old-config" ? "HomologatorConfig" : "GRM" })
+                    });
+                using var client = new HomologadorApiClient(new HttpClient(handler),
+                    new HttpClient(new MockHandler(_ => throw new Exception("Unexpected GRM request"))),
+                    new GrmTokenManager(new HttpClient(new MockHandler(_ => throw new Exception("Unexpected login")))),
+                    "http://localhost:5080");
+                try
+                {
+                    var healthy = await client.IsHealthyAsync();
+                    Assert((mode == "current" && healthy) || (mode == "offline" && !healthy));
+                }
+                catch (InvalidOperationException ex) when (mode is "old-config" or "missing-config" or "old-auth")
+                {
+                    Assert(ex.Message.Contains("API antigua"));
+                }
+                Assert(handler.Calls == 1);
+            });
+        await Check("real HTTP login, module loading and report selection do not open either local database", async () =>
+        {
+            await using var app = AzureApiHost.Build([
+                "--ConnectionStrings:ConfigDb=invalid-unused-connection",
+                "--ConnectionStrings:AzureDb=invalid-unused-connection",
+                "--Encryption:Key=" + new string('F', 32),
+                "--Logging:LogLevel:Default=Warning",
+                "--Logging:EventLog:LogLevel:Default=None",
+                "--Logging:LogLevel:Microsoft.AspNetCore.DataProtection=None"
+            ], "http://127.0.0.1:0");
+            var options = app.Services.GetRequiredService<IOptionsMonitor<HttpClientFactoryOptions>>();
+            var profile = new GrmUser(1, "fake@example.invalid", "fake", "Fake", "User",
+                new GrmCompany(1), ["Conversor_Calidad", "Conversor_Recepcion", "Conversor_Produccion"],
+                ["GRM.CONVERSOR.CALIDAD", "GRM.CONVERSOR.RECEPCION", "GRM.CONVERSOR.PRODUCCION"]);
+            options.Get(nameof(GrmProfileAccess)).HttpMessageHandlerBuilderActions.Add(builder =>
+                builder.PrimaryHandler = new MockHandler(_ => new(HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(profile)
+                }));
+            var fixture = Fixture(Cipher());
+            options.Get(nameof(GrmRuleReader)).HttpMessageHandlerBuilderActions.Add(builder =>
+                builder.PrimaryHandler = new MockHandler(request =>
+                {
+                    var process = request.RequestUri!.Query.Length == 0 ? (int?)null
+                        : int.Parse(request.RequestUri.Query.Split('=')[1]);
+                    return request.RequestUri.AbsolutePath switch
+                    {
+                        "/api/conversor/configuracion" => new(HttpStatusCode.OK)
+                        { Content = JsonContent.Create(process.HasValue ? Scope(fixture, process.Value) : fixture) },
+                        "/api/conversor/reglas" => new(HttpStatusCode.OK)
+                        { Content = JsonContent.Create(Rules(process!.Value)) },
+                        _ => throw new Exception("Unexpected GRM request")
+                    };
+                }));
+            await app.StartAsync();
+            try
+            {
+                using var authHttp = new HttpClient(new MockHandler(_ => new(HttpStatusCode.OK)
+                { Content = JsonContent.Create(new { accessToken = new JwtSecurityTokenHandler().WriteToken(
+                    new JwtSecurityToken(expires: DateTime.UtcNow.AddHours(1))), expiresIn = 3600, tokenType = "Bearer" }) }));
+                var tokens = new GrmTokenManager(authHttp);
+                using var client = new HomologadorApiClient(new HttpClient(),
+                    new HttpClient(new MockHandler(_ => throw new Exception("Unexpected desktop GRM request"))),
+                    tokens, app.Urls.Single());
+                Assert(await client.IsHealthyAsync());
+                var user = await client.LoginAsync("fake", "fake");
+                Assert(user.Id == 1 && user.Rol == "Operator");
+                var reports = await client.GetMyReportsAsync();
+                Assert(reports.Select(r => r.Id).SequenceEqual([1, 2, 3]));
+                foreach (var report in reports)
+                {
+                    var context = await client.GetExecutionContextAsync(report.Id);
+                    Assert(context.Report.Id == report.Id && context.DataSource.DecryptedUsername == FakeUser);
+                }
+                profile = profile with { Roles = ["Conversor_Calidad"], Permissions = ["GRM.CONVERSOR.CALIDAD"] };
+                Assert((await client.GetMyReportsAsync()).Single().Id == 1);
+                try
+                {
+                    await client.GetExecutionContextAsync(2);
+                    throw new Exception("Unauthorized reception was allowed.");
+                }
+                catch (InvalidOperationException ex) { Assert(ex.Message.Contains("permiso")); }
+                profile = profile with { Roles = [], Permissions = [] };
+                Assert((await client.GetMyReportsAsync()).Count == 0);
+            }
+            finally { await app.StopAsync(); }
         });
         return count;
     }
