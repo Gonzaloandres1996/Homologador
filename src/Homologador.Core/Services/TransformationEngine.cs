@@ -58,6 +58,7 @@ public class TransformationEngine : ITransformationEngine
                     .ToHashSet(StringComparer.OrdinalIgnoreCase));
 
         var resultRows = new List<Dictionary<string, object?>>(sourceRows.Count);
+        var rowsByPalletKey = new Dictionary<string, Dictionary<string, object?>>(StringComparer.OrdinalIgnoreCase);
         var warnings = new List<TransformationWarningDto>();
 
         for (int i = 0; i < sourceRows.Count; i++)
@@ -315,6 +316,27 @@ public class TransformationEngine : ITransformationEngine
 
             if (!excludeRow)
             {
+                if (transformedRow.TryGetValue("LOTEPROCESO", out var loteVal) &&
+                    transformedRow.TryGetValue("CODIGO PALLET", out var palletVal) &&
+                    transformedRow.TryGetValue("CANTIDAD", out var cantVal) &&
+                    loteVal?.ToString()?.Trim() is { Length: > 0 } loteStr &&
+                    palletVal?.ToString()?.Trim() is { Length: > 0 } palletStr)
+                {
+                    var palletKey = $"{loteStr}|{palletStr}";
+                    if (rowsByPalletKey.TryGetValue(palletKey, out var existingRow))
+                    {
+                        var currentCant = ParseDecimalValue(existingRow["CANTIDAD"], "CANTIDAD", "CANTIDAD", rowNumber, warnings);
+                        var addedCant = ParseDecimalValue(cantVal, "CANTIDAD", "CANTIDAD", rowNumber, warnings);
+                        var totalCant = currentCant + addedCant;
+                        existingRow["CANTIDAD"] = totalCant % 1 == 0 && totalCant is >= int.MinValue and <= int.MaxValue
+                            ? (int)totalCant
+                            : totalCant;
+                        continue;
+                    }
+
+                    rowsByPalletKey[palletKey] = transformedRow;
+                }
+
                 resultRows.Add(transformedRow);
             }
         }
