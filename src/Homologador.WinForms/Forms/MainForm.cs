@@ -109,6 +109,9 @@ public partial class MainForm : Form
         _btnGenerar.Click += OnBtnGenerarClick;
 
         _gridExecution.CellFormatting += OnGridExecutionCellFormatting;
+        _gridExecution.CurrentCellDirtyStateChanged += OnGridExecutionCurrentCellDirtyStateChanged;
+        _gridExecution.CellValueChanged += OnGridExecutionCellValueChanged;
+        _gridExecution.ColumnHeaderMouseClick += OnGridExecutionColumnHeaderMouseClick;
 
         // Admin events
         _btnBrowseOutputDir.Click += OnBtnBrowseOutputDirClick;
@@ -312,12 +315,15 @@ public partial class MainForm : Form
                     ? $"{rec.Lote} | {rec.CodigoPallet}"
                     : rec.Lote;
                 var rowIdx = _gridExecution.Rows.Add(
+                    false,
                     rec.FechaHoraCreacionArchivo?.ToString("dd-MM-yyyy") ?? "-",
                     displayLote, rec.Productor ?? "-",
                     FormatKilos(tipoProceso == 1 ? rec.Kg : null,
                         tipoProceso == 3 ? rec.Calibre : null), "Cargado");
                 _gridExecution.Rows[rowIdx].Tag = rec;
+                DisableCheckForLoadedRow(_gridExecution.Rows[rowIdx]);
             }
+            UpdateGenerarButtonState();
             _lblStatusText.Text = $"Persistencia GRM cargada: {_gridExecution.Rows.Count} registro(s) del reporte.";
             _lblStatusPending.Text = $"Cargados: {_gridExecution.Rows.Count}";
             _btnActualizar.Enabled = true;
@@ -449,8 +455,7 @@ public partial class MainForm : Form
 
             if (newPendingItems.Count == 0)
             {
-                _btnGenerar.Enabled = _pendingRecords.Count > 0 && _grmPersistenceKnown
-                    && (!_hasSimulatedPending || _isAdmin);
+                UpdateGenerarButtonState();
                 MessageBox.Show(
                     "No se encontraron registros nuevos.\nTodos los lotes obtenidos ya se encuentran cargados en la base de datos.",
                     "Sin Nuevos Registros",
@@ -467,6 +472,7 @@ public partial class MainForm : Form
                 _pendingRecords.Insert(0, item);
 
                 _gridExecution.Rows.Insert(0,
+                    true,
                     item.Fecha,
                     item.Lote,
                     item.Productor,
@@ -479,7 +485,7 @@ public partial class MainForm : Form
             if (usedSimulation)
                 _hasSimulatedPending = true;
 
-            _btnGenerar.Enabled = _grmPersistenceKnown && (!_hasSimulatedPending || _isAdmin);
+            UpdateGenerarButtonState();
             _lblStatusText.Text = _hasSimulatedPending && !_isAdmin
                 ? $"Simulación: {newPendingItems.Count} pendiente(s). Generar está bloqueado para proteger GRM PROD."
                 : $"Actualización completa: {newPendingItems.Count} nuevo(s) registro(s) pendiente(s) listado(s) arriba de la tabla.";
@@ -507,6 +513,13 @@ public partial class MainForm : Form
             return;
         }
 
+        var selectedPending = GetCheckedPendingRecords();
+        if (selectedPending.Count == 0)
+        {
+            MessageBox.Show("Debe seleccionar al menos un registro pendiente para generar el archivo Excel.", "Sin Selección", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
         if (!_isAdmin && (!_grmPersistenceKnown || _hasSimulatedPending))
         {
             var reason = _hasSimulatedPending
@@ -524,9 +537,9 @@ public partial class MainForm : Form
             var ctx = _currentContext;
             var report = _currentReport;
 
-            // Extraer las filas transformadas de los pendientes
-            var pendingTransformedRows = _pendingRecords.Select(p => p.TransformedRow).ToList();
-            var pendingMetadata = _pendingRecords.Select(p => p.Metadata).ToList();
+            // Extraer las filas transformadas únicamente de los pendientes seleccionados
+            var pendingTransformedRows = selectedPending.Select(p => p.TransformedRow).ToList();
+            var pendingMetadata = selectedPending.Select(p => p.Metadata).ToList();
             var tipoProceso = TipoProceso(report.TargetArea);
             if (tipoProceso == 3 && pendingMetadata.Any(row =>
                     !TrySplitProductionKey(row.PrimaryKey, out _, out _)))
@@ -640,8 +653,7 @@ public partial class MainForm : Form
         {
             _lblStatusText.Text = $"Error generando archivo: {ex.Message}";
             MessageBox.Show($"Error durante la generación del archivo:\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            _btnGenerar.Enabled = _pendingRecords.Count > 0 && _grmPersistenceKnown
-                && (!_hasSimulatedPending || _isAdmin);
+            UpdateGenerarButtonState();
         }
     }
 
@@ -650,13 +662,97 @@ public partial class MainForm : Form
         foreach (DataGridViewRow row in _gridExecution.Rows)
         {
             if (row.Tag is PendingRecordItem item && confirmed.Contains(item.Metadata.PrimaryKey))
+            {
                 row.Cells["_colEstado"].Value = "Cargado";
+                DisableCheckForLoadedRow(row);
+            }
         }
         _pendingRecords.RemoveAll(item => confirmed.Contains(item.Metadata.PrimaryKey));
         if (_pendingRecords.Count == 0)
             _hasSimulatedPending = false;
-        _btnGenerar.Enabled = _pendingRecords.Count > 0 && _grmPersistenceKnown && !_hasSimulatedPending;
+        UpdateGenerarButtonState();
         _lblStatusPending.Text = $"Pendientes: {_pendingRecords.Count}  |  Cargados: {_gridExecution.Rows.Count - _pendingRecords.Count}";
+    }
+
+    private static void DisableCheckForLoadedRow(DataGridViewRow row)
+    {
+        var emptyCell = new DataGridViewTextBoxCell { Value = string.Empty };
+        row.Cells["_colSeleccionar"] = emptyCell;
+        emptyCell.ReadOnly = true;
+    }
+
+    private List<PendingRecordItem> GetCheckedPendingRecords()
+    {
+        var list = new List<PendingRecordItem>();
+        foreach (DataGridViewRow row in _gridExecution.Rows)
+        {
+            if (row.Tag is PendingRecordItem item &&
+                row.Cells["_colSeleccionar"].Value is true)
+            {
+                list.Add(item);
+            }
+        }
+        return list;
+    }
+
+    private void UpdateGenerarButtonState()
+    {
+        var checkedCount = GetCheckedPendingRecords().Count;
+        var pendingCount = _pendingRecords.Count;
+
+        if (pendingCount == 0)
+        {
+            _colSeleccionar.HeaderText = "☐ Todos";
+        }
+        else if (checkedCount == pendingCount)
+        {
+            _colSeleccionar.HeaderText = "☑ Todos";
+        }
+        else
+        {
+            _colSeleccionar.HeaderText = $"☐ Todos ({checkedCount}/{pendingCount})";
+        }
+
+        _btnGenerar.Enabled = checkedCount > 0 && _grmPersistenceKnown && (!_hasSimulatedPending || _isAdmin);
+    }
+
+    private void OnGridExecutionCurrentCellDirtyStateChanged(object? sender, EventArgs e)
+    {
+        if (_gridExecution.IsCurrentCellDirty &&
+            _gridExecution.CurrentCell?.OwningColumn?.Name == "_colSeleccionar")
+        {
+            _gridExecution.CommitEdit(DataGridViewDataErrorContexts.Commit);
+        }
+    }
+
+    private void OnGridExecutionCellValueChanged(object? sender, DataGridViewCellEventArgs e)
+    {
+        if (e.RowIndex >= 0 && e.ColumnIndex >= 0 &&
+            _gridExecution.Columns[e.ColumnIndex].Name == "_colSeleccionar")
+        {
+            UpdateGenerarButtonState();
+        }
+    }
+
+    private void OnGridExecutionColumnHeaderMouseClick(object? sender, DataGridViewCellMouseEventArgs e)
+    {
+        if (e.ColumnIndex < 0 || _gridExecution.Columns[e.ColumnIndex].Name != "_colSeleccionar") return;
+        if (_pendingRecords.Count == 0) return;
+
+        _gridExecution.EndEdit();
+
+        var allChecked = GetCheckedPendingRecords().Count == _pendingRecords.Count;
+        var nextState = !allChecked;
+
+        foreach (DataGridViewRow row in _gridExecution.Rows)
+        {
+            if (row.Tag is PendingRecordItem)
+            {
+                row.Cells["_colSeleccionar"].Value = nextState;
+            }
+        }
+
+        UpdateGenerarButtonState();
     }
 
     private static int TipoProceso(string area) =>

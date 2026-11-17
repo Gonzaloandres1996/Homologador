@@ -36,6 +36,7 @@ partial class MainForm
     private System.Windows.Forms.Button _btnGenerar;
     private System.Windows.Forms.Panel _pnlTableContainer;
     private System.Windows.Forms.DataGridView _gridExecution;
+    private System.Windows.Forms.DataGridViewCheckBoxColumn _colSeleccionar;
     private System.Windows.Forms.DataGridViewTextBoxColumn _colFecha;
     private System.Windows.Forms.DataGridViewTextBoxColumn _colLote;
     private System.Windows.Forms.DataGridViewTextBoxColumn _colProductor;
@@ -137,6 +138,7 @@ partial class MainForm
         _btnGenerar = new Button();
         _pnlTableContainer = new Panel();
         _gridExecution = new DataGridView();
+        _colSeleccionar = new DataGridViewCheckBoxColumn();
         _colFecha = new DataGridViewTextBoxColumn();
         _colLote = new DataGridViewTextBoxColumn();
         _colProductor = new DataGridViewTextBoxColumn();
@@ -575,6 +577,7 @@ partial class MainForm
         _gridExecution.ColumnHeadersHeightSizeMode = System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
 
         _gridExecution.Columns.AddRange(new System.Windows.Forms.DataGridViewColumn[] {
+            _colSeleccionar,
             _colFecha,
             _colLote,
             _colProductor,
@@ -603,12 +606,22 @@ partial class MainForm
         _gridExecution.Location = new System.Drawing.Point(20, 12);
         _gridExecution.MultiSelect = false;
         _gridExecution.Name = "_gridExecution";
-        _gridExecution.ReadOnly = true;
+        _gridExecution.ReadOnly = false;
         _gridExecution.RowHeadersVisible = false;
         _gridExecution.RowTemplate.Height = 32;
         _gridExecution.SelectionMode = System.Windows.Forms.DataGridViewSelectionMode.FullRowSelect;
         _gridExecution.Size = new System.Drawing.Size(1220, 570);
         _gridExecution.TabIndex = 0;
+        // 
+        // _colSeleccionar
+        // 
+        _colSeleccionar.HeaderText = "☑ Todos";
+        _colSeleccionar.Name = "_colSeleccionar";
+        _colSeleccionar.ReadOnly = false;
+        _colSeleccionar.SortMode = System.Windows.Forms.DataGridViewColumnSortMode.NotSortable;
+        _colSeleccionar.Width = 90;
+        _colSeleccionar.DefaultCellStyle.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+        _colSeleccionar.HeaderCell.Style.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
         // 
         // _colFecha
         // 
