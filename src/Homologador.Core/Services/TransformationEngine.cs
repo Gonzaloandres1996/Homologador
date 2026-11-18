@@ -311,6 +311,18 @@ public class TransformationEngine : ITransformationEngine
                     ));
                 }
 
+                if (string.Equals(rule.TargetColumn, "Kilos", StringComparison.OrdinalIgnoreCase) &&
+                    targetValue != null &&
+                    targetValue != DBNull.Value &&
+                    !string.IsNullOrWhiteSpace(targetValue.ToString()))
+                {
+                    var decKilos = ParseDecimalValue(targetValue, rule.SourceColumn ?? rule.TargetColumn, rule.TargetColumn, rowNumber, warnings);
+                    var roundedKilos = Math.Round(decKilos, 0, MidpointRounding.AwayFromZero);
+                    targetValue = roundedKilos is >= int.MinValue and <= int.MaxValue
+                        ? (int)roundedKilos
+                        : roundedKilos;
+                }
+
                 transformedRow[rule.TargetColumn] = targetValue;
             }
 
