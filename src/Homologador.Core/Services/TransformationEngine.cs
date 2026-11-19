@@ -240,8 +240,7 @@ public class TransformationEngine : ITransformationEngine
                         break;
 
                     case "CONCAT":
-                        var concatCols = (rule.SourceColumn ?? string.Empty)
-                            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                        var concatCols = SplitSourceColumns(rule.SourceColumn);
                         var sep = rule.FixedValue ?? string.Empty;
                         var parts = new List<string>();
                         foreach (var cName in concatCols)
@@ -255,8 +254,7 @@ public class TransformationEngine : ITransformationEngine
                         break;
 
                     case "AGGREGATE":
-                        var colNames = (rule.SourceColumn ?? string.Empty)
-                            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                        var colNames = SplitSourceColumns(rule.SourceColumn);
                         int n = colNames.Length;
                         decimal sum = 0m;
 
@@ -363,6 +361,27 @@ public class TransformationEngine : ITransformationEngine
             Warnings: warnings,
             DurationMs: sw.ElapsedMilliseconds
         );
+    }
+
+    private static string[] SplitSourceColumns(string? sourceColumn)
+    {
+        if (string.IsNullOrEmpty(sourceColumn))
+        {
+            return [];
+        }
+
+        var rawParts = sourceColumn.Split(',', StringSplitOptions.RemoveEmptyEntries);
+        var result = new List<string>(rawParts.Length);
+        for (int i = 0; i < rawParts.Length; i++)
+        {
+            var part = i > 0 && rawParts[i].StartsWith(' ') ? rawParts[i][1..] : rawParts[i];
+            if (part.Length > 0)
+            {
+                result.Add(part);
+            }
+        }
+
+        return [.. result];
     }
 
     private static object? FormatValue(object? val, string? dateFormat)

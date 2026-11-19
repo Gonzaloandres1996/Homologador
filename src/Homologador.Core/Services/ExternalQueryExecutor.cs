@@ -90,7 +90,7 @@ public class ExternalQueryExecutor : IExternalQueryExecutor
 
         foreach (var col in schemaColumns)
         {
-            var colName = col.ColumnName?.Trim() ?? $"Col_{columns.Count + 1}";
+            var colName = col.ColumnName ?? $"Col_{columns.Count + 1}";
             columns.Add(new ColumnSchemaDto(
                 Name: colName,
                 SqlType: col.DataTypeName ?? "nvarchar",
@@ -106,7 +106,7 @@ public class ExternalQueryExecutor : IExternalQueryExecutor
             var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
             for (var i = 0; i < reader.FieldCount; i++)
             {
-                var colName = reader.GetName(i).Trim();
+                var colName = reader.GetName(i);
                 var val = await reader.IsDBNullAsync(i, ct) ? null : reader.GetValue(i);
 
                 if (val is DateTime dt)

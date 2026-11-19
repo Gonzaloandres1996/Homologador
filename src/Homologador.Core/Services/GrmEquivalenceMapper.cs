@@ -11,8 +11,11 @@ public static class GrmEquivalenceMapper
         (1, 2, "Especies"),
         (2, 3, "Esponjas"),
         (3, 4, "Polvo Tierra"),
-        (4, 5, "Tratamiento")
+        (4, 5, "Tratamiento"),
+        (5, 6, "Nota Pedicelo")
     ];
+
+    private static readonly int[] DefaultRequiredLookupIds = [1, 2, 3, 4];
 
     public static ExecutionContextDto WithLookups(
         ExecutionContextDto context, IReadOnlyList<GrmEquivalenceRow> equivalences)
@@ -25,7 +28,11 @@ public static class GrmEquivalenceMapper
     public static IReadOnlyList<LookupTableDto> ToLookupTables(
         IReadOnlyList<GrmEquivalenceRow> equivalences, IReadOnlyList<int>? required = null)
     {
-        required ??= Groups.Select(g => g.LookupId).ToArray();
+        required ??= Groups
+            .Where(g => DefaultRequiredLookupIds.Contains(g.LookupId)
+                || equivalences.Any(row => row.IdParametro == g.ParameterId))
+            .Select(g => g.LookupId)
+            .ToArray();
         var lookups = new List<LookupTableDto>();
         foreach (var lookupId in required)
         {
