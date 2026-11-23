@@ -576,7 +576,8 @@ public partial class MainForm : Form
                 pendingTransformedRows,
                 report.OutputFormat,
                 report.OutputSheetName,
-                report.OutputFilePattern);
+                report.OutputFilePattern,
+                normalizeForExcelCompatibility: tipoProceso == 2);
 
             // Guardar directamente en la ruta configurada (por defecto Descargas)
             var outputDir = AppConfigService.GetOutputDirectory();

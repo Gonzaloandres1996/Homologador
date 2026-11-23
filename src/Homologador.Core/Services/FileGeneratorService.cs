@@ -1,5 +1,8 @@
 using System.Globalization;
+using System.IO.Compression;
 using System.Text;
+using System.Xml;
+using System.Xml.Linq;
 using ClosedXML.Excel;
 using Homologador.Core.DTOs;
 
@@ -12,7 +15,8 @@ public interface IFileGeneratorService
         IReadOnlyList<Dictionary<string, object?>> rows,
         string outputFormat,
         string? sheetName,
-        string fileNamePattern);
+        string fileNamePattern,
+        bool normalizeForExcelCompatibility = false);
 }
 
 public class FileGeneratorService : IFileGeneratorService
@@ -22,7 +26,8 @@ public class FileGeneratorService : IFileGeneratorService
         IReadOnlyList<Dictionary<string, object?>> rows,
         string outputFormat,
         string? sheetName,
-        string fileNamePattern)
+        string fileNamePattern,
+        bool normalizeForExcelCompatibility = false)
     {
         var resolvedFileName = ResolveFileName(fileNamePattern, outputFormat);
 
@@ -30,7 +35,7 @@ public class FileGeneratorService : IFileGeneratorService
         {
             "CSV" => GenerateDelimited(columns, rows, ";", resolvedFileName, "text/csv; charset=utf-8"),
             "TABDELIMITED" or "TSV" => GenerateDelimited(columns, rows, "\t", resolvedFileName, "text/tab-separated-values; charset=utf-8"),
-            _ => GenerateExcel(columns, rows, sheetName, resolvedFileName)
+            _ => GenerateExcel(columns, rows, sheetName, resolvedFileName, normalizeForExcelCompatibility)
         };
     }
 
@@ -38,7 +43,8 @@ public class FileGeneratorService : IFileGeneratorService
         IReadOnlyList<string> columns,
         IReadOnlyList<Dictionary<string, object?>> rows,
         string? sheetName,
-        string fileName)
+        string fileName,
+        bool normalizeForExcelCompatibility)
     {
         using var workbook = new XLWorkbook();
         var safeSheetName = string.IsNullOrWhiteSpace(sheetName) ? "Data" : sheetName.Trim();
@@ -86,11 +92,166 @@ public class FileGeneratorService : IFileGeneratorService
         using var ms = new MemoryStream();
         workbook.SaveAs(ms);
 
+        var fileBytes = normalizeForExcelCompatibility
+            ? NormalizeExcelPackage(ms.ToArray())
+            : ms.ToArray();
+
         return new GeneratedFileResult(
-            FileBytes: ms.ToArray(),
+            FileBytes: fileBytes,
             ContentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             FileName: fileName
         );
+    }
+
+    private const string SpreadsheetMainNs = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    private const string ExtendedPropertiesNs = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties";
+    private const string PackageRelationshipsNs = "http://schemas.openxmlformats.org/package/2006/relationships";
+
+    /// <summary>
+    /// Normalizes a ClosedXML-generated .xlsx package to match Microsoft Excel's OOXML conventions:
+    /// removes UTF-8 BOMs, converts absolute relationship targets to relative paths, and promotes
+    /// prefixed SpreadsheetML/ExtendedProperties namespaces (x:, ap:) to default namespaces.
+    /// </summary>
+    public static byte[] NormalizeExcelPackage(byte[] xlsxBytes)
+    {
+        var utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        var xmlSettings = new XmlWriterSettings
+        {
+            Encoding = utf8NoBom,
+            Indent = false,
+            OmitXmlDeclaration = false,
+            NewLineHandling = NewLineHandling.None
+        };
+
+        using var inputStream = new MemoryStream(xlsxBytes, writable: false);
+        using var inputArchive = new ZipArchive(inputStream, ZipArchiveMode.Read);
+        using var outputStream = new MemoryStream(xlsxBytes.Length);
+
+        using (var outputArchive = new ZipArchive(outputStream, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            foreach (var entry in inputArchive.Entries)
+            {
+                var outEntry = outputArchive.CreateEntry(entry.FullName, CompressionLevel.Optimal);
+                using var inEntryStream = entry.Open();
+                using var outEntryStream = outEntry.Open();
+
+                var normalizedName = entry.FullName.Replace('\\', '/');
+                if (IsXmlPart(normalizedName))
+                {
+                    var doc = XDocument.Load(inEntryStream, System.Xml.Linq.LoadOptions.PreserveWhitespace);
+
+                    if (normalizedName.EndsWith(".rels", StringComparison.OrdinalIgnoreCase))
+                    {
+                        NormalizeRelationships(doc, normalizedName);
+                    }
+                    else if (normalizedName.StartsWith("xl/", StringComparison.OrdinalIgnoreCase))
+                    {
+                        PromoteNamespaceToDefault(doc, SpreadsheetMainNs);
+                    }
+                    else if (normalizedName.Equals("docProps/app.xml", StringComparison.OrdinalIgnoreCase))
+                    {
+                        PromoteNamespaceToDefault(doc, ExtendedPropertiesNs);
+                    }
+
+                    doc.Declaration = new XDeclaration("1.0", "UTF-8", "yes");
+
+                    using var writer = XmlWriter.Create(outEntryStream, xmlSettings);
+                    doc.Save(writer);
+                }
+                else
+                {
+                    inEntryStream.CopyTo(outEntryStream);
+                }
+            }
+        }
+
+        return outputStream.ToArray();
+    }
+
+    private static bool IsXmlPart(string entryName) =>
+        entryName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)
+        || entryName.EndsWith(".rels", StringComparison.OrdinalIgnoreCase)
+        || entryName.EndsWith(".psmdcp", StringComparison.OrdinalIgnoreCase);
+
+    private static void PromoteNamespaceToDefault(XDocument doc, string targetNamespace)
+    {
+        var root = doc.Root;
+        if (root == null) return;
+
+        var prefixedDecls = root.Attributes()
+            .Where(a => a.IsNamespaceDeclaration && a.Name.Namespace == XNamespace.Xmlns && a.Value == targetNamespace)
+            .ToList();
+
+        if (prefixedDecls.Count == 0) return;
+
+        foreach (var attr in prefixedDecls)
+        {
+            attr.Remove();
+        }
+
+        if (root.Attribute("xmlns") == null)
+        {
+            root.Add(new XAttribute("xmlns", targetNamespace));
+        }
+
+        // Clean any redundant prefixed declarations on descendant elements.
+        foreach (var el in root.Descendants())
+        {
+            var redundant = el.Attributes()
+                .Where(a => a.IsNamespaceDeclaration && a.Name.Namespace == XNamespace.Xmlns && a.Value == targetNamespace)
+                .ToList();
+            foreach (var attr in redundant)
+            {
+                attr.Remove();
+            }
+        }
+    }
+
+    private static void NormalizeRelationships(XDocument doc, string relsEntryName)
+    {
+        var root = doc.Root;
+        if (root == null) return;
+
+        var ownerDir = GetRelsOwnerDirectory(relsEntryName);
+        XName relationshipName = XName.Get("Relationship", PackageRelationshipsNs);
+
+        foreach (var rel in root.Elements(relationshipName))
+        {
+            var targetMode = rel.Attribute("TargetMode")?.Value;
+            if (string.Equals(targetMode, "External", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var targetAttr = rel.Attribute("Target");
+            if (targetAttr == null || !targetAttr.Value.StartsWith('/'))
+            {
+                continue;
+            }
+
+            var targetWithoutSlash = targetAttr.Value.TrimStart('/');
+            if (ownerDir.Length == 0)
+            {
+                targetAttr.Value = targetWithoutSlash;
+            }
+            else if (targetWithoutSlash.StartsWith(ownerDir, StringComparison.OrdinalIgnoreCase))
+            {
+                targetAttr.Value = targetWithoutSlash[ownerDir.Length..];
+            }
+            else
+            {
+                var baseUri = new Uri("https://ooxml.local/" + ownerDir);
+                var targetUri = new Uri("https://ooxml.local/" + targetWithoutSlash);
+                targetAttr.Value = baseUri.MakeRelativeUri(targetUri).ToString();
+            }
+        }
+    }
+
+    private static string GetRelsOwnerDirectory(string relsEntryName)
+    {
+        const string relsSegment = "_rels/";
+        var idx = relsEntryName.LastIndexOf(relsSegment, StringComparison.OrdinalIgnoreCase);
+        return idx <= 0 ? string.Empty : relsEntryName[..idx];
     }
 
     private static void SetCellValue(IXLCell cell, object val)
