@@ -65,6 +65,7 @@ public class TransformationEngine : ITransformationEngine
         {
             var sourceRow = sourceRows[i];
             var transformedRow = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, Dictionary<string, decimal>>? reweightCache = null;
             int rowNumber = i + 1;
             int warningsBeforeRow = warnings.Count;
             bool excludeRow = false;
@@ -277,6 +278,88 @@ public class TransformationEngine : ITransformationEngine
                         }
 
                         targetValue = aggResult;
+                        break;
+
+                    case "REWEIGHT":
+                        var reservedCols = SplitSourceColumns(rule.FixedValue);
+                        var groupCols = SplitSourceColumns(rule.LookupKeyColumn);
+                        if (groupCols.Length == 0 && !string.IsNullOrWhiteSpace(rule.SourceColumn))
+                        {
+                            groupCols = [rule.SourceColumn.Trim()];
+                        }
+
+                        int decimals = rule.SubstringLength is >= 0 ? rule.SubstringLength.Value : 2;
+                        var cacheKey = $"{string.Join("|", reservedCols)}::{string.Join("|", groupCols)}::{decimals}";
+                        reweightCache ??= new Dictionary<string, Dictionary<string, decimal>>(StringComparer.OrdinalIgnoreCase);
+
+                        if (!reweightCache.TryGetValue(cacheKey, out var groupValuesMap))
+                        {
+                            var reservedVals = new decimal[reservedCols.Length];
+                            for (int rIdx = 0; rIdx < reservedCols.Length; rIdx++)
+                            {
+                                sourceRow.TryGetValue(reservedCols[rIdx], out var rawRes);
+                                reservedVals[rIdx] = ParseDecimalValue(rawRes, reservedCols[rIdx], rule.TargetColumn, rowNumber, warnings);
+                            }
+
+                            var groupVals = new decimal[groupCols.Length];
+                            for (int gIdx = 0; gIdx < groupCols.Length; gIdx++)
+                            {
+                                sourceRow.TryGetValue(groupCols[gIdx], out var rawGrp);
+                                groupVals[gIdx] = ParseDecimalValue(rawGrp, groupCols[gIdx], rule.TargetColumn, rowNumber, warnings);
+                            }
+
+                            var reweightResult = CalibreReweighter.ReweightGroup(reservedVals, groupVals, decimals);
+                            if (!string.IsNullOrEmpty(reweightResult.Warning))
+                            {
+                                warnings.Add(new TransformationWarningDto(
+                                    RowIndex: rowNumber,
+                                    TargetColumn: rule.TargetColumn,
+                                    SourceColumn: rule.SourceColumn,
+                                    OffendingValue: string.Join(",", groupVals),
+                                    Reason: reweightResult.Warning
+                                ));
+                            }
+
+                            groupValuesMap = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+                            for (int gIdx = 0; gIdx < groupCols.Length; gIdx++)
+                            {
+                                groupValuesMap[groupCols[gIdx]] = reweightResult.Values[gIdx];
+                            }
+
+                            reweightCache[cacheKey] = groupValuesMap;
+                        }
+
+                        var currentSourceCol = rule.SourceColumn?.Trim();
+                        if (!string.IsNullOrEmpty(currentSourceCol) && groupValuesMap.TryGetValue(currentSourceCol, out var reweightedVal))
+                        {
+                            targetValue = reweightedVal;
+                        }
+                        else if (!string.IsNullOrEmpty(currentSourceCol) && sourceRow.TryGetValue(currentSourceCol, out var fallbackRaw))
+                        {
+                            warnings.Add(new TransformationWarningDto(
+                                RowIndex: rowNumber,
+                                TargetColumn: rule.TargetColumn,
+                                SourceColumn: rule.SourceColumn,
+                                OffendingValue: currentSourceCol,
+                                Reason: $"Columna fuente '{currentSourceCol}' no está incluida en el grupo de reponderación '{rule.LookupKeyColumn}'; se mantuvo el valor original."
+                            ));
+                            targetValue = FormatValue(fallbackRaw, rule.DateFormat);
+                        }
+                        else
+                        {
+                            targetValue = null;
+                        }
+                        break;
+
+                    default:
+                        warnings.Add(new TransformationWarningDto(
+                            RowIndex: rowNumber,
+                            TargetColumn: rule.TargetColumn,
+                            SourceColumn: rule.SourceColumn,
+                            OffendingValue: ruleType,
+                            Reason: $"Tipo de regla desconocido '{ruleType}' en columna '{rule.TargetColumn}'."
+                        ));
+                        targetValue = null;
                         break;
                 }
 

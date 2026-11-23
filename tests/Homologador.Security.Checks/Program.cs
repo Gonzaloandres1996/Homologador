@@ -850,6 +850,128 @@ await Check("V3 empty response blocks context", async () =>
         Assert(grm.Calls == 1);
     }
 });
+await Check("Reweight rule closes Lot 1073 and real Andinexia Lot A511097 to exact 100.00", () =>
+{
+    const string reserved = "PRE CALIBRE, DEFECTO CALIBRE L";
+    const string group = "XL, J, 2J, 3J, 4J, 5J, 6J";
+    var rules = new PipelineRuleDto[]
+    {
+        new(10, 1, "Precalibre", "Direct", "PRE CALIBRE", null, null, null, null, null, null, false, false, null, null),
+        new(11, 2, "Calibre L", "Direct", "DEFECTO CALIBRE L", null, null, null, null, null, null, false, false, null, null),
+        new(12, 3, "Calibre XL", "Reweight", "XL", reserved, null, group, null, null, null, false, false, null, 2),
+        new(13, 4, "Calibre J", "Reweight", "J", reserved, null, group, null, null, null, false, false, null, 2),
+        new(14, 5, "Calibre 2J", "Reweight", "2J", reserved, null, group, null, null, null, false, false, null, 2),
+        new(15, 6, "Calibre 3J", "Reweight", "3J", reserved, null, group, null, null, null, false, false, null, 2),
+        new(16, 7, "Calibre 4J", "Reweight", "4J", reserved, null, group, null, null, null, false, false, null, 2),
+        new(17, 8, "Calibre 5J", "Reweight", "5J", reserved, null, group, null, null, null, false, false, null, 2),
+        new(18, 9, "Calibre 6J", "Reweight", "6J", reserved, null, group, null, null, null, false, false, null, 2)
+    };
+
+    var lot1073 = new Dictionary<string, object?>
+    {
+        ["PRE CALIBRE"] = 2.4m, ["DEFECTO CALIBRE L"] = 5.8m,
+        ["XL"] = 16m, ["J"] = 40m, ["2J"] = 37m, ["3J"] = 6m, ["4J"] = 1m, ["5J"] = 0m, ["6J"] = 0m
+    };
+    var lotA511097 = new Dictionary<string, object?>
+    {
+        ["PRE CALIBRE"] = 1.8m, ["DEFECTO CALIBRE L"] = 7.9m,
+        ["XL"] = 22m, ["J"] = 32m, ["2J"] = 34m, ["3J"] = 12m, ["4J"] = 0m, ["5J"] = 0m, ["6J"] = 0m
+    };
+    var lotZeroSmall = new Dictionary<string, object?>
+    {
+        ["PRE CALIBRE"] = 0m, ["DEFECTO CALIBRE L"] = 0m,
+        ["XL"] = 13m, ["J"] = 51m, ["2J"] = 29m, ["3J"] = 7m, ["4J"] = 0m, ["5J"] = 0m, ["6J"] = 0m
+    };
+
+    var res = new TransformationEngine().Transform(rules, [], [lot1073, lotA511097, lotZeroSmall]);
+    Assert(res.WarningCount == 0 && res.Rows.Count == 3);
+
+    var r0 = res.Rows[0];
+    Assert((decimal)r0["Precalibre"]! == 2.4m && (decimal)r0["Calibre L"]! == 5.8m);
+    Assert((decimal)r0["Calibre XL"]! == 14.69m && (decimal)r0["Calibre J"]! == 36.72m
+        && (decimal)r0["Calibre 2J"]! == 33.96m && (decimal)r0["Calibre 3J"]! == 5.51m
+        && (decimal)r0["Calibre 4J"]! == 0.92m && (decimal)r0["Calibre 5J"]! == 0m
+        && (decimal)r0["Calibre 6J"]! == 0m);
+    Assert(CalibreReweighter.QualityCalibreColumns.Sum(c => (decimal)r0[c]!) == 100.00m);
+
+    var r1 = res.Rows[1];
+    Assert(CalibreReweighter.QualityCalibreColumns.Sum(c => (decimal)r1[c]!) == 100.00m);
+
+    var r2 = res.Rows[2];
+    Assert((decimal)r2["Calibre XL"]! == 13m && (decimal)r2["Calibre J"]! == 51m
+        && (decimal)r2["Calibre 2J"]! == 29m && (decimal)r2["Calibre 3J"]! == 7m);
+
+    var issues = CalibreReweighter.FindOutOfToleranceCalibres([
+        ("A511073", r0), ("A511097", r1), ("A510000", r2)
+    ]);
+    Assert(issues.Count == 0);
+    return Task.CompletedTask;
+});
+await Check("Reweight exposes broken source block and tolerance alert triggers outside +-0.03", () =>
+{
+    const string reserved = "PRE CALIBRE, DEFECTO CALIBRE L";
+    const string group = "XL, J, 2J, 3J, 4J, 5J, 6J";
+    var rules = new PipelineRuleDto[]
+    {
+        new(10, 1, "Precalibre", "Direct", "PRE CALIBRE", null, null, null, null, null, null, false, false, null, null),
+        new(11, 2, "Calibre L", "Direct", "DEFECTO CALIBRE L", null, null, null, null, null, null, false, false, null, null),
+        new(12, 3, "Calibre XL", "Reweight", "XL", reserved, null, group, null, null, null, false, false, null, 2),
+        new(13, 4, "Calibre J", "Reweight", "J", reserved, null, group, null, null, null, false, false, null, 2),
+        new(14, 5, "Calibre 2J", "Reweight", "2J", reserved, null, group, null, null, null, false, false, null, 2),
+        new(15, 6, "Calibre 3J", "Reweight", "3J", reserved, null, group, null, null, null, false, false, null, 2),
+        new(16, 7, "Calibre 4J", "Reweight", "4J", reserved, null, group, null, null, null, false, false, null, 2),
+        new(17, 8, "Calibre 5J", "Reweight", "5J", reserved, null, group, null, null, null, false, false, null, 2),
+        new(18, 9, "Calibre 6J", "Reweight", "6J", reserved, null, group, null, null, null, false, false, null, 2)
+    };
+
+    var brokenFirmpro = new Dictionary<string, object?>
+    {
+        ["PRE CALIBRE"] = 2m, ["DEFECTO CALIBRE L"] = 8m,
+        ["XL"] = 10m, ["J"] = 30m, ["2J"] = 52m, ["3J"] = 0m, ["4J"] = 0m, ["5J"] = 0m, ["6J"] = 0m // sums 92
+    };
+    var over100Small = new Dictionary<string, object?>
+    {
+        ["PRE CALIBRE"] = 60m, ["DEFECTO CALIBRE L"] = 50m,
+        ["XL"] = 100m, ["J"] = 0m, ["2J"] = 0m, ["3J"] = 0m, ["4J"] = 0m, ["5J"] = 0m, ["6J"] = 0m
+    };
+
+    var res = new TransformationEngine().Transform(rules, [], [brokenFirmpro, over100Small]);
+    Assert(res.WarningCount == 2);
+    var issues = CalibreReweighter.FindOutOfToleranceCalibres([
+        ("A519001", res.Rows[0]), ("A519002", res.Rows[1])
+    ]);
+    Assert(issues.Count == 2 && issues[0].LotId == "A519001" && issues[0].TotalSum == 92.80m
+        && issues[1].LotId == "A519002" && issues[1].TotalSum == 210.00m);
+
+    // Tolerance boundary checks: +-0.03 inclusive passes, +-0.04 fails
+    Dictionary<string, object?> RowWithTotal(decimal total) => new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Precalibre"] = 0m, ["Calibre L"] = 0m, ["Calibre XL"] = total
+    };
+    var boundaryIssues = CalibreReweighter.FindOutOfToleranceCalibres([
+        ("OK_LOW", RowWithTotal(99.97m)),
+        ("OK_EXACT", RowWithTotal(100.00m)),
+        ("OK_HIGH", RowWithTotal(100.03m)),
+        ("BAD_LOW", RowWithTotal(99.96m)),
+        ("BAD_HIGH", RowWithTotal(100.04m))
+    ]);
+    Assert(boundaryIssues.Count == 2
+        && boundaryIssues[0].LotId == "BAD_LOW"
+        && boundaryIssues[1].LotId == "BAD_HIGH");
+
+    var singleMsg = CalibreReweighter.FormatToleranceAlertMessage([boundaryIssues[0]]);
+    Assert(singleMsg.Contains("BAD_LOW") && singleMsg.Contains("99.96%") && singleMsg.Contains("0.03%") && singleMsg.Contains("Pendiente"));
+    var multiMsg = CalibreReweighter.FormatToleranceAlertMessage(boundaryIssues);
+    Assert(multiMsg.Contains("BAD_LOW") && multiMsg.Contains("BAD_HIGH") && multiMsg.Contains("2 lotes"));
+
+    // Unknown RuleType produces a warning instead of silent null
+    var unknownRes = new TransformationEngine().Transform(
+        [new(1, 1, "ColA", "UnknownType", "SrcA", null, null, null, null, null, null, false, false, null, null)],
+        [],
+        [new Dictionary<string, object?> { ["SrcA"] = "123" }]);
+    Assert(unknownRes.WarningCount == 1 && unknownRes.Rows[0]["ColA"] is null);
+    return Task.CompletedTask;
+});
 passed += await V4Checks.RunAsync();
 Console.WriteLine($"{passed} security, equivalence, rule, and configuration checks passed.");
 

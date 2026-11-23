@@ -529,6 +529,30 @@ public partial class MainForm : Form
             return;
         }
 
+        if (TipoProceso(_currentReport.TargetArea) == 2)
+        {
+            var calibreIssues = CalibreReweighter.FindOutOfToleranceCalibres(
+                selectedPending
+                    .Select(p => (p.Metadata.PrimaryKey, (IReadOnlyDictionary<string, object?>)p.TransformedRow))
+                    .ToList());
+
+            if (calibreIssues.Count > 0)
+            {
+                var confirm = MessageBox.Show(
+                    CalibreReweighter.FormatToleranceAlertMessage(calibreIssues),
+                    "Alerta de Distribución de Calibres",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2);
+
+                if (confirm != DialogResult.Yes)
+                {
+                    _lblStatusText.Text = "Generación cancelada por alerta de calibres. Los registros se mantienen en Pendiente.";
+                    return;
+                }
+            }
+        }
+
         _btnGenerar.Enabled = false;
         var sw = Stopwatch.StartNew();
 
